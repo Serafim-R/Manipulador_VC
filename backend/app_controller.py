@@ -1,7 +1,13 @@
 from backend.camera.camera_manager import CameraManager
 from backend.camera.detection_thread import DetectionThread
+from backend.robot.robot_thread import RobotActionThread
 
 from yolo.yolo import YOLODetector
+
+# arquivos do projeto do gemeo digital (colocados na raiz do projeto)
+from serial_driver import SerialDriver
+from unity_client import UnityClient
+from robot_control import RobotController
 
 
 class ApplicationController:
@@ -10,7 +16,7 @@ class ApplicationController:
 
         self.backend = backend
 
-        # self.robot = RobotController()
+        # --- Camera / deteccao ---
 
         self.camera = CameraManager()
 
@@ -20,15 +26,26 @@ class ApplicationController:
 
         self.detection_thread = None
 
-        # self.calibration = Calibration()
+        # --- Manipulador / gemeo digital ---
 
-    def home(self):
+        # ajuste a porta em serial_driver.py (Raspberry Pi usa algo como
+        # '/dev/ttyUSB0', nao 'COM3') e o host/porta em unity_client.py
+        self.serial = SerialDriver()
+        self.unity = UnityClient()
+        self.robot = RobotController(self.serial, self.unity)
 
-        print("HOME")
+        # configuracao inicial do GRBL, igual ao main.py do projeto do gemeo digital
+        self.serial.send_settings()
+        self.serial.send("G90")
+        self.serial.send("F800")
+        self.robot.recuperar_do_log()
+        self.serial.reset_log()
 
-        self.backend.updateStatus("Movendo para HOME")
+        self.robot_thread = None
 
-        self.backend.addLog("HOME acionado")
+    # ------------------------------------------------------------------
+    # Camera / YOLO
+    # ------------------------------------------------------------------
 
     def detect(self):
 
@@ -45,8 +62,8 @@ class ApplicationController:
 
         self.detection_thread.frameCaptured.connect(self.backend.updateFrame)
         self.detection_thread.detectionsReady.connect(self._on_detections)
-        self.detection_thread.errorOccurred.connect(self._on_error)
-        self.detection_thread.finished.connect(self._on_finished)
+        self.detection_thread.errorOccurred.connect(self._on_detection_error)
+        self.detection_thread.finished.connect(self._on_detection_finished)
 
         self.detection_thread.start()
 
@@ -68,16 +85,33 @@ class ApplicationController:
                 f"Detectado: {d['class']} ({d['confidence']:.2f})"
             )
 
-    def _on_error(self, message):
+    def _on_detection_error(self, message):
 
         print("Erro na deteccao:", message)
 
         self.backend.updateStatus("Erro na deteccao")
         self.backend.addLog(message)
 
-    def _on_finished(self):
+    def _on_detection_finished(self):
 
         self.backend.addLog("Deteccao finalizada")
+
+    # ------------------------------------------------------------------
+    # Manipulador
+    # ------------------------------------------------------------------
+
+    def home(self):
+
+        print("HOME")
+
+        if self.robot_thread and self.robot_thread.isRunning():
+            self.backend.addLog("Ja existe um movimento em andamento")
+            return
+
+        self.backend.updateStatus("Movendo para HOME")
+        self.backend.addLog("HOME acionado")
+
+        self._executar_no_robo(self.robot.home)
 
     def manipulate(self):
 
@@ -87,6 +121,10 @@ class ApplicationController:
 
         print(f"Movimento manual solicitado: x={x}, y={y}, z={z}")
 
+        if self.robot_thread and self.robot_thread.isRunning():
+            self.backend.addLog("Ja existe um movimento em andamento")
+            return
+
         self.backend.updateStatus(
             f"Movendo para X={x:.2f} Y={y:.2f} Z={z:.2f}"
         )
@@ -94,9 +132,29 @@ class ApplicationController:
             f"Movimento manual: ({x:.2f}, {y:.2f}, {z:.2f})"
         )
 
-        # TODO: chamar aqui o algoritmo real de movimentacao do manipulador
-        # self.robot.move_to(x, y, z)
+        self._executar_no_robo(self.robot.mover_para, x, y, z)
 
     def calibrate(self):
 
         print("Calibrando")
+
+    def _executar_no_robo(self, action, *args):
+
+        self.robot_thread = RobotActionThread(action, *args)
+
+        self.robot_thread.finishedOk.connect(self._on_robot_ok)
+        self.robot_thread.errorOccurred.connect(self._on_robot_error)
+
+        self.robot_thread.start()
+
+    def _on_robot_ok(self, message):
+
+        self.backend.updateStatus("Pronto")
+        self.backend.addLog(message)
+
+    def _on_robot_error(self, message):
+
+        print("Erro no robo:", message)
+
+        self.backend.updateStatus("Erro no movimento")
+        self.backend.addLog(message)
