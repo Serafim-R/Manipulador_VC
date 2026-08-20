@@ -54,7 +54,41 @@ class ApplicationController:
             self.backend.addLog("Deteccao ja em andamento")
             return
 
-        print("1 - Entrou em detect()")
+        if self.robot_thread and self.robot_thread.isRunning():
+            print("Manipulador ocupado, ignorando novo clique")
+            self.backend.addLog("Ja existe um movimento em andamento")
+            return
+
+        print("1 - Posicionando o manipulador para deteccao")
+
+        self.backend.statusChanged.emit("Posicionando para deteccao...")
+
+        # primeiro move o braco ate o ponto de onde a camera enxerga a mesa;
+        # so quando o movimento terminar (rotina_deteccao) e que a captura
+        # + deteccao YOLO sao disparadas, em _on_posicionamento_ok
+        self.robot_thread = RobotActionThread(self.robot.rotina_deteccao)
+
+        self.robot_thread.finishedOk.connect(self._on_posicionamento_ok)
+        self.robot_thread.errorOccurred.connect(self._on_posicionamento_error)
+
+        self.robot_thread.start()
+
+    def _on_posicionamento_ok(self, message):
+
+        print("2 - Posicionamento concluido, iniciando captura")
+
+        self.backend.addLog("Posicionamento concluido")
+
+        self._iniciar_captura_deteccao()
+
+    def _on_posicionamento_error(self, message):
+
+        print("Erro no posicionamento:", message)
+
+        self.backend.updateStatus("Erro no posicionamento")
+        self.backend.addLog(message)
+
+    def _iniciar_captura_deteccao(self):
 
         self.backend.statusChanged.emit("Capturando frame...")
 
@@ -67,7 +101,7 @@ class ApplicationController:
 
         self.detection_thread.start()
 
-        print("2 - DetectionThread iniciada")
+        print("3 - DetectionThread iniciada")
 
     def _on_detections(self, detections):
 
@@ -116,6 +150,15 @@ class ApplicationController:
     def manipulate(self):
 
         print("Manipulando objeto")
+
+        if self.robot_thread and self.robot_thread.isRunning():
+            self.backend.addLog("Ja existe um movimento em andamento")
+            return
+
+        self.backend.updateStatus("Executando rotina: lapis / suporte")
+        self.backend.addLog("Rotina lapis/suporte iniciada")
+
+        self._executar_no_robo(self.robot.rotina_lapis_suporte)
 
     def manualMove(self, x, y, z):
 

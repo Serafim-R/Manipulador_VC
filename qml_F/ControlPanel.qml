@@ -56,6 +56,7 @@ Item {
             flat: true
             checkable: false
             anchors.horizontalCenter: parent.horizontalCenter
+            onClicked: backend.manipulate()
         }
 
         Button {
