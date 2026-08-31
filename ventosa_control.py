@@ -6,10 +6,6 @@ class VentosaController:
     """Controla a bomba de vacuo e a valvula do efetuador tipo ventosa (24V DC)
     via GPIO da Raspberry Pi. Injetada no RobotController como self.ventosa,
     seguindo o mesmo padrao de self.serial e self.unity em ApplicationController.
-
-    Deve ser instanciada uma unica vez (em ApplicationController.__init__),
-    nunca dentro de uma rotina ou por chamada — reinstanciar o OutputDevice
-    repetidamente pode gerar conflito de pino no gpiozero.
     """
 
     def __init__(self, pino_valvula=37, pino_bomba=27, tempo_vacuo=0.5):
