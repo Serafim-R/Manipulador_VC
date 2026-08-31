@@ -4,12 +4,14 @@ import numpy as np
 import bezier as bz
 import ik_craig as ik
 from config import GCODE_LOG
+from ventosa_control import VentosaController
 
 class RobotController:
-    def __init__(self, serial_driver, unity_client):
+    def __init__(self, serial_driver, unity_client, ventosa=None):
         """Guarda as referências de comunicação e o estado inicial de posição e orientação do robô."""
         self.serial = serial_driver
         self.unity = unity_client
+        self.ventosa = ventosa
         
         # Estado inicial do manipulador
         self.P0 = np.array([403.3643, 0, 570.3432])
