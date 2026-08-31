@@ -8,6 +8,7 @@ from yolo.yolo import YOLODetector
 from serial_driver import SerialDriver
 from unity_client import UnityClient
 from robot_control import RobotController
+from ventosa_control import VentosaController
 
 
 class ApplicationController:
@@ -32,7 +33,12 @@ class ApplicationController:
         # '/dev/ttyUSB0', nao 'COM3') e o host/porta em unity_client.py
         self.serial = SerialDriver()
         self.unity = UnityClient()
-        self.robot = RobotController(self.serial, self.unity)
+
+        # efetuador tipo ventosa (bomba + valvula 24V DC via GPIO).
+        # ajuste os pinos e o tempo de vacuo em ventosa_control.py
+        self.ventosa = VentosaController()
+
+        self.robot = RobotController(self.serial, self.unity, self.ventosa)
 
         # configuracao inicial do GRBL, igual ao main.py do projeto do gemeo digital
         self.serial.send_settings()
@@ -160,6 +166,19 @@ class ApplicationController:
 
         self._executar_no_robo(self.robot.rotina_lapis_suporte)
 
+    def manipulate_ventosa(self):
+
+        print("Manipulando objeto com a ventosa")
+
+        if self.robot_thread and self.robot_thread.isRunning():
+            self.backend.addLog("Ja existe um movimento em andamento")
+            return
+
+        self.backend.updateStatus("Executando rotina: ventosa")
+        self.backend.addLog("Rotina ventosa iniciada")
+
+        self._executar_no_robo(self.robot.rotina_ventosa)
+
     def manualMove(self, x, y, z):
 
         print(f"Movimento manual solicitado: x={x}, y={y}, z={z}")
@@ -201,3 +220,7 @@ class ApplicationController:
 
         self.backend.updateStatus("Erro no movimento")
         self.backend.addLog(message)
+
+        # a rotina pode ter sido interrompida no meio da sucao —
+        # garante que a bomba/valvula nao fiquem ligadas indefinidamente
+        self.ventosa.desligar_tudo()
