@@ -18,7 +18,9 @@ class RobotController:
         
         # Estado inicial do manipulador
         self.P0 = np.array([403.3643, 0, 570.3432])
-        self.Ri = np.array([[0, 0, 1], [0, -1, 0], [1, 0, 0]])
+        self.Ri = np.array([[0, 0, 1], 
+                            [0, -1, 0], 
+                            [1, 0, 0]])
         self.base_offset = np.array([-137, 645, 25])
         self.modo_juntas = False
 
@@ -48,7 +50,7 @@ class RobotController:
         """Envia um G1 direto com os 6 ângulos das juntas (valores GRBL) e espelha no Unity.
         Ativa o modo juntas: bloqueia trajetórias/rotina até o Home ser usado."""
         self.modo_juntas = True
-        self.serial.send(f"G1 X{j1} Y{j2} Z{j3} A{j4} B{j6} C{j5} F50")
+        self.serial.send(f"G1 X{j1} Y{j2} Z{j3} A{j4} B{j6} C{j5} F800")
         self.unity.send_angles(j1, j2, -j3, j4, j5, j6)
 
     def calcular_tempo_trajetoria(self, x, y, z, theta4, theta5, theta6, feedrate=800, fator_seg=1.2):
@@ -102,9 +104,12 @@ class RobotController:
         if self.modo_juntas:
             print("Modo juntas ativo — use o Home antes de um movimento cartesiano.")
             return None, None, None
-
+        b = np.array([-137, 645, 25])
         P3 = np.array([x, y, z])
-        Rf = self.Ri  # mantem a orientacao atual do efetuador
+        P3 -= b
+        Rf = np.array([[ 0,  -1,  0], 
+                        [ -1, 0,  0], 
+                        [ 0,  0, -1]]) 
 
         x1, y1, z1 = bz.calculo_pontos(self.P0, P3, self.Ri, Rf)
         A1, B1, C1 = self.interpolar_abc(self.Ri, self.P0, Rf, P3, 21)
@@ -257,8 +262,8 @@ class RobotController:
 
     def rotina_captura_calibracao(self, cap):
 
-            # u = np.array([1, 0, 0]) ## Normal à mesa e paralelo à parede
-            u = np.array([2, 1, 0]) ## Normal à mesa e com inclinaçao com a parede
+            u = np.array([1, 0, 0]) ## Normal à mesa e paralelo à parede usar até 12
+            # u = np.array([2, 1, 0]) ## Normal à mesa e com inclinaçao com a parede eu tenho que usar ate 10
             v = np.array([0, 0, 1])
 
             b = np.array([-137, 645, 25])

@@ -8,7 +8,7 @@ class VentosaController:
     seguindo o mesmo padrao de self.serial e self.unity em ApplicationController.
     """
 
-    def __init__(self, pino_valvula=37, pino_bomba=27, tempo_vacuo=0.5):
+    def __init__(self, pino_valvula=26, pino_bomba=27, tempo_vacuo=0.5):
         self.valvula = OutputDevice(pino_valvula, active_high=True, initial_value=False)
         # self.bomba = OutputDevice(pino_bomba, active_high=True, initial_value=False)
         self.tempo_vacuo = tempo_vacuo

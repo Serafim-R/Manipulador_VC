@@ -151,3 +151,82 @@ def calculo_angulos_abc(R, P):
 
     return theta4, theta5, theta6
 
+def calculo_angulos_abc_semi_circ(R, P):
+    """Cinemática inversa de orientação: retorna os ângulos A, B e C (juntas 4, 5 e 6)."""
+
+    P = P.reshape(3,1)
+
+    topo = np.hstack((R, P))
+    base = np.array([[0,0,0,1]])
+
+    T06 = np.vstack((topo, base))
+
+    Px = T06[0,3]
+    Py = T06[1,3]
+    Pz = T06[2,3]
+
+    theta1 = np.arctan2(Py, Px)
+
+    T1 = matriz_trans_np(d1, a1_1, theta1, alpha1_1)
+
+    T16 = np.linalg.inv(T1) @ T06
+
+    Px16 = T16[0,3]
+    Pz16 = T16[2,3]
+
+    K = (np.power(Px16, 2) + np.power(Pz16, 2) + np.power(a2_1, 2) - 2*Px16*a2_1 - np.power(a3_1, 2) - np.power(a4_1, 2) - np.power(d4, 2))/(2*a3_1)
+    
+    theta3 = np.arctan2(a4_1, d4) - np.arctan2(K, np.sqrt(np.power(a4_1, 2) + np.power(d4, 2) - np.power(K, 2)))
+
+    M = np.cos(theta1)*Px + np.sin(theta1)*Py - a2_1
+    N = d1 - Pz
+
+    s23 = (a4_1 + a3_1*np.cos(theta3))*N + (-d4 + a3_1*np.sin(theta3))*M
+    c23 = (a4_1 + a3_1*np.cos(theta3))*M - (-d4 + a3_1*np.sin(theta3))*N
+
+    theta23 = np.arctan2(s23, c23)
+
+    theta2 = theta23 - theta3
+
+    T2 = matriz_trans_np(d2, a2_1, theta2, alpha2_1)
+    T3 = matriz_trans_np(d3, a3_1, theta3, alpha3_1)
+
+    T03 = T1 @ T2 @ T3
+    T36 = np.linalg.inv(T03) @ T06
+    T36 = limpar_matriz(T36)
+
+    c5 = T36[1,2]
+
+    if np.isclose(abs(c5), 1):
+        theta4 = 0.0
+        theta5 = 0.0
+    else:
+        u = np.cos(theta1)*np.cos(theta23)*T06[0,2] + np.sin(theta1)*np.cos(theta23)*T06[1,2] - np.sin(theta23)*T06[2,2]
+        v = -np.sin(theta1)*T06[0,2] + np.cos(theta1)*T06[1,2]
+        theta4 = np.arctan2(v, -u)
+        s5 = T06[2,2]*np.sin(theta23)*np.cos(theta4) - T06[0,2]*(np.cos(theta1)*np.cos(theta23)*np.cos(theta4) + np.sin(theta1)*np.sin(theta4)) - T06[1,2]*(np.sin(theta1)*np.cos(theta23)*np.cos(theta4) - np.cos(theta1)*np.sin(theta4))
+        c5 = -T06[0,2]*np.cos(theta1)*np.sin(theta23) - T06[1,2]*np.sin(theta1)*np.sin(theta23) - T06[2,2]*np.cos(theta23)
+        theta5 = np.arctan2(s5, c5)
+
+    s6 = T06[2,0]*np.sin(theta23)*np.sin(theta4) - T06[0,0]*(np.cos(theta1)*np.cos(theta23)*np.sin(theta4) - np.sin(theta1)*np.cos(theta4)) - T06[1,0]*(np.sin(theta1)*np.cos(theta23)*np.sin(theta4) + np.cos(theta1)*np.cos(theta4))
+    c6 = T06[0,0]*((np.cos(theta1)*np.cos(theta23)*np.cos(theta4) + np.sin(theta1)*np.sin(theta4))*np.cos(theta5) - np.cos(theta1)*np.sin(theta23)*np.sin(theta5)) + T06[1,0]*((np.sin(theta1)*np.cos(theta23)*np.cos(theta4) - np.cos(theta1)*np.sin(theta4))*np.cos(theta5) - np.sin(theta1)*np.sin(theta23)*np.sin(theta5)) - T06[2,0]*(np.sin(theta23)*np.cos(theta4)*np.cos(theta5) + np.cos(theta23)*np.sin(theta5))
+
+    theta6 = np.arctan2(s6, c6)
+
+    theta4 = np.round(np.rad2deg(theta4), 2)
+    theta5 = np.round(np.rad2deg(theta5), 2)
+    theta6 = np.round(np.rad2deg(theta6), 2)
+
+    if abs(theta4) == 180 and abs(theta6) == 180:
+        theta4 = 0
+        theta6 = 0
+        theta5 = -theta5
+    elif abs(theta4) == 180:
+        theta4 = 0
+        theta5 = theta5 - 90
+    elif abs(theta6) == 180:
+        theta6 = 0
+
+    theta5 = -theta5
+
+    return theta4, theta5, theta6
