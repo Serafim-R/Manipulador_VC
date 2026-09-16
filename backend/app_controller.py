@@ -256,7 +256,20 @@ class ApplicationController:
         self.backend.updateStatus("Iniciando calibração")
         self.backend.addLog("Iniciando rotina de calibração")
 
-        self._executar_no_robo(self.robot.rotina_captura_calibracao)
+        self._executar_no_robo(self._rodar_captura_calibracao)
+
+    def _rodar_captura_calibracao(self):
+        """Abre a camera, roda a rotina do seu parceiro (que espera um
+        cv2.VideoCapture ja aberto) e garante o fechamento no final,
+        mesmo se a rotina lancar uma excecao no meio do caminho."""
+ 
+        if not self.camera.open():
+            raise RuntimeError("Nao foi possivel abrir a camera")
+ 
+        try:
+            self.robot.rotina_captura_calibracao(self.camera.cap)
+        finally:
+            self.camera.close()
         
 
     def _executar_no_robo(self, action, *args):
