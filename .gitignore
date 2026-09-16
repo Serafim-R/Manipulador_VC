@@ -1,0 +1,7 @@
+*/venv/
+*/.venv/
+*/project/
+__pycache__/
+*.pyc
+gcode_log.txt
+*:Zone.Identifier
