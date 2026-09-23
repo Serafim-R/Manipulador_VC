@@ -1,6 +1,7 @@
 import os
 
 from backend.camera.camera_manager import CameraManager
+from backend.camera.camera_thread import CamThread
 from backend.camera.detection_thread import DetectionThread
 from backend.robot.robot_thread import RobotActionThread
 from backend.calibration.vision_to_robot import VisionToRobot
@@ -42,6 +43,16 @@ class ApplicationController:
 
         self.vision_to_robot = None
 
+        # thread unica de captura: nenhum outro ponto do projeto abre o
+        # dispositivo enquanto ela estiver rodando. Recebe o frame BRUTO
+        # (sem undistort), porque as fotos de calibracao precisam da
+        # imagem original e o undistort e aplicado depois, por consumidor.
+        self.camera_thread = CamThread(self.camera)
+
+        self.camera_thread.frameCaptured.connect(self.backend.updateFrame)
+        self.camera_thread.errorOccurred.connect(self._on_camera_error)
+        self.camera_thread.cameraStats.connect(self.backend.updateCameraStatus)
+
         try:
             self.vision_to_robot = VisionToRobot(INTRINSIC_PATH, HANDEYE_PATH)
             print("Calibração pixel -> mm carregada com sucesso")
@@ -76,6 +87,23 @@ class ApplicationController:
     # ------------------------------------------------------------------
     # Camera / YOLO
     # ------------------------------------------------------------------
+
+    def start_camera(self):
+
+        if not self.camera_thread.isRunning():
+            self.camera_thread.start()
+
+    def stop_camera(self):
+
+        if self.camera_thread.isRunning():
+            self.camera_thread.stop()
+
+    def _on_camera_error(self, message):
+
+        print("Erro na camera:", message)
+
+        self.backend.updateStatus("Erro na câmera")
+        self.backend.addLog(message)
 
     def detect(self):
 
@@ -124,9 +152,10 @@ class ApplicationController:
 
         self._pose_na_captura = (self.robot.Ri.copy(), self.robot.P0.copy())
 
-        self.detection_thread = DetectionThread(self.camera, self.detector)
+        # consome o frame do stream em vez de disputar /dev/video0
+        self.detection_thread = DetectionThread(self.camera_thread, self.detector)
 
-        self.detection_thread.frameCaptured.connect(self.backend.updateFrame)
+        self.detection_thread.frameCaptured.connect(self.backend.showAnnotated)
         self.detection_thread.detectionsReady.connect(self._on_detections)
         self.detection_thread.errorOccurred.connect(self._on_detection_error)
         self.detection_thread.finished.connect(self._on_detection_finished)
@@ -259,17 +288,12 @@ class ApplicationController:
         self._executar_no_robo(self._rodar_captura_calibracao)
 
     def _rodar_captura_calibracao(self):
-        """Abre a camera, roda a rotina do seu parceiro (que espera um
-        cv2.VideoCapture ja aberto) e garante o fechamento no final,
-        mesmo se a rotina lancar uma excecao no meio do caminho."""
- 
-        if not self.camera.open():
-            raise RuntimeError("Nao foi possivel abrir a camera")
- 
-        try:
-            self.robot.rotina_captura_calibracao(self.camera.cap)
-        finally:
-            self.camera.close()
+
+        # a câmera continua transmitindo: a rotina pede à CamThread um frame
+        # fresco em cada pose, sem fechar o dispositivo e sem congelar o
+        # preview. CamThread.capture_frame tem a mesma assinatura que
+        # CameraManager.capture_frame, então robot_control não muda.
+        self.robot.rotina_captura_calibracao(camera=self.camera_thread)
         
 
     def _executar_no_robo(self, action, *args):

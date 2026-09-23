@@ -1,11 +1,14 @@
 import QtQuick
 import QtQuick.Controls
+import Manipulador_IA
 import CameraModule 1.0
 
 Item {
     id: root
-    width: 800
-    height: 600
+    // mesma referencia usada por ControlPanel/StatusPanel/LogPanel: sem isso
+    // o retangulo abaixo extravasa o pai e so aparece porque clip e false
+    width: Constants.width
+    height: Constants.height
 
     Rectangle {
         id: framecam_position
@@ -13,12 +16,13 @@ Item {
         y: 200
         width: 855
         height: 530
-        color: "#00000000"
+        color: "#202020"
         border.width: 3
         CameraItem {
             id: cameraView
+            objectName: "cameraView"
             anchors.fill: parent
-        }   
+        }
     }
 
     Connections {

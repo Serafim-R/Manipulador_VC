@@ -1,6 +1,6 @@
 from PySide6.QtQuick import QQuickPaintedItem
 from PySide6.QtGui import QImage
-from PySide6.QtCore import Slot, QMutex
+from PySide6.QtCore import Slot, QMutex, QRectF, Qt
 
 
 class CameraItem(QQuickPaintedItem):
@@ -21,13 +21,26 @@ class CameraItem(QQuickPaintedItem):
         img = self._image
         self._mutex.unlock()
 
-        if not img.isNull():
-            painter.drawImage(self.boundingRect(), img)
+        if img.isNull():
+            return
+
+        area = self.boundingRect()
+
+        # a camera entrega 4:3 e a area no QML e mais larga: centraliza
+        # preservando a proporcao em vez de esticar a imagem
+        tam = img.size().scaled(area.size().toSize(), Qt.KeepAspectRatio)
+
+        destino = QRectF(
+            area.x() + (area.width() - tam.width()) / 2.0,
+            area.y() + (area.height() - tam.height()) / 2.0,
+            tam.width(),
+            tam.height()
+        )
+
+        painter.drawImage(destino, img)
 
     @Slot(QImage)
     def updateImage(self, image):
-
-        print("CameraItem recebeu frame para desenhar")
 
         self._mutex.lock()
         self._image = image

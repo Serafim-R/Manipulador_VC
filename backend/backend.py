@@ -1,7 +1,9 @@
+import time
+
 from PySide6.QtCore import QObject, Signal, Slot
+from PySide6.QtGui import QImage
 
 from backend.app_controller import ApplicationController
-from PySide6.QtGui import QImage
 
 
 class Backend(QObject):
@@ -21,16 +23,70 @@ class Backend(QObject):
     objectDetected = Signal(str)
 
     cameraFrameChanged = Signal(QImage)
+
+    # (camera ativa?, fps medido)
+    cameraStatusChanged = Signal(bool, float)
     #========================================
 
-    def __init__(self):
-    
-            super().__init__()
-    
-            self.controller = ApplicationController(self)
-            self.provider = None
+    # por quantos segundos o frame anotado pelo YOLO segura o preview,
+    # senao ele seria sobrescrito pelo proximo frame do stream
+    HOLD_ANOTACAO_S = 3.0
 
-    
+    def __init__(self):
+
+            super().__init__()
+
+            # o Backend nao possui camera: quem cria e opera a CamThread e o
+            # ApplicationController, que e o unico dono do dispositivo
+            self.controller = ApplicationController(self)
+
+            self._segurar_ate = 0.0
+
+
+    #========================================
+    # Camera
+    #========================================
+
+    @Slot()
+    def startCamera(self):
+
+        self.controller.start_camera()
+
+
+    @Slot()
+    def stopCamera(self):
+
+        self.controller.stop_camera()
+
+
+    @Slot(QImage)
+    def updateFrame(self, image):
+
+        if time.monotonic() < self._segurar_ate:
+            return
+
+        self.cameraFrameChanged.emit(image)
+
+
+    def showAnnotated(self, image):
+        """Exibe o frame anotado do YOLO e o segura por alguns segundos."""
+
+        self._segurar_ate = 0.0
+
+        self.cameraFrameChanged.emit(image)
+
+        self._segurar_ate = time.monotonic() + self.HOLD_ANOTACAO_S
+
+
+    def updateCameraStatus(self, ativa, fps):
+
+        self.cameraStatusChanged.emit(ativa, fps)
+
+
+    #========================================
+    # Manipulador
+    #========================================
+
     @Slot()
     def home(self):
 
@@ -61,19 +117,8 @@ class Backend(QObject):
         self.controller.manualMove(x, y, z)
 
 
-    def updateFrame(self, image):
-
-        print("Backend recebeu frame")
-        
-        if self.provider:
-             self.provider.updateImage(image)
-
-        self.cameraFrameChanged.emit(image)
-
     def updateStatus(self, texto):
          self.statusChanged.emit(texto)
+
     def addLog(self, texto):
          self.logMessage.emit(texto)
-
-    def setImageProvider(self, provider):
-        self.provider = provider

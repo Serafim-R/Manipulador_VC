@@ -41,6 +41,13 @@ def main():
         print('Erro: nenhum objeto QML carregado')
         sys.exit(-1)
 
+    # o stream so comeca depois que o QML existe: assim os primeiros frames
+    # nao ficam enfileirados antes do Connections de CameraView.qml
+    backend.startCamera()
+
+    # encerra a thread e libera /dev/video0 ao fechar a janela
+    app.aboutToQuit.connect(backend.stopCamera)
+
     sys.exit(app.exec())
 
 

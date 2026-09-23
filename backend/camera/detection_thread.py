@@ -6,9 +6,12 @@ from PySide6.QtGui import QImage
 
 class DetectionThread(QThread):
     """
-    Thread de execucao unica (nao fica em loop): abre a camera, captura
-    UM frame, opcionalmente desdistorce (calibracao da etapa 1), roda a
+    Thread de execucao unica (nao fica em loop): pede UM frame fresco ao
+    stream, opcionalmente desdistorce (calibracao da etapa 1), roda a
     deteccao do YOLO nesse frame e emite o resultado.
+
+    Nao abre nem fecha a camera: o dispositivo pertence a CamThread, que
+    continua alimentando o preview enquanto a deteccao roda.
     """
 
     frameCaptured = Signal(QImage)
@@ -19,10 +22,10 @@ class DetectionThread(QThread):
     # para dar tempo da auto-exposicao/foco da camera estabilizar
     WARMUP_FRAMES = 5
 
-    def __init__(self, camera, detector, vision_to_robot=None):
+    def __init__(self, camera_stream, detector, vision_to_robot=None):
         super().__init__()
 
-        self.camera = camera
+        self.stream = camera_stream
         self.detector = detector
 
         # opcional: se fornecido, o frame e desdistorcido antes da YOLO
@@ -34,18 +37,7 @@ class DetectionThread(QThread):
 
     def run(self):
 
-        if not self.camera.open():
-            self.errorOccurred.emit("Nao foi possivel abrir a camera")
-            return
-
-        frame = None
-
-        try:
-            for _ in range(self.WARMUP_FRAMES):
-                frame = self.camera.read()
-
-        finally:
-            self.camera.close()
+        frame = self.stream.capture_frame(warmup_frames=self.WARMUP_FRAMES)
 
         if frame is None:
             self.errorOccurred.emit("Nao foi possivel capturar um frame da camera")

@@ -214,9 +214,31 @@ Item {
                 height: 40
                 radius: width/2
                 border.color: "#000000"
-                color: "#7c7878"
                 property bool camOn: false
-                property bool camOff: false
+                color: camOn ? "#3fae49" : "#7c7878"
+            }
+
+            Text {
+                id: cam_fps
+                x: 276
+                y: 154
+                width: 110
+                height: 40
+                text: cam_ind.camOn ? fpsValor.toFixed(0) + " fps" : qsTr("desligada")
+                font.pixelSize: 18
+                verticalAlignment: Text.AlignVCenter
+                color: cam_ind.camOn ? "#000000" : "#7c7878"
+
+                property real fpsValor: 0
+            }
+
+            Connections {
+                target: backend
+
+                function onCameraStatusChanged(ativa, fps) {
+                    cam_ind.camOn = ativa
+                    cam_fps.fpsValor = fps
+                }
             }
 
             Rectangle {

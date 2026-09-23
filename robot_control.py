@@ -153,6 +153,8 @@ class RobotController:
         """Máquina de estados que pega o lápis da mesa e o encaixa no suporte, desenhando no gráfico quando há callback."""
         import time
 
+        self.serial.send("M97 B60 T0.2") # Abre a garra
+
         if self.modo_juntas:
             print("Modo juntas ativo — use o Home para retornar antes de executar a rotina.")
             return
@@ -164,7 +166,7 @@ class RobotController:
         P_lapis = np.array([-300, 210, 0])        # Lápis na mesa
         P_apr_lapis = P_lapis + np.array([0, 0, 100]) # 10cm acima do lápis
         
-        P_suporte = np.array([10, 120, 250])     # Ponto de encaixe no suporte
+        P_suporte = np.array([10, 120, 240])     # Ponto de encaixe no suporte
         P_apr_suporte = P_suporte + np.array([0, 0, 100]) # 10cm acima do suporte
 
         # Rotações
@@ -260,10 +262,10 @@ class RobotController:
         x, y, z = self.home()
         if plot_callback: plot_callback(list(x), list(y), list(z), False)
 
-    def rotina_captura_calibracao(self, cap):
+    def rotina_captura_calibracao(self, camera=None):
 
-            u = np.array([1, 0, 0]) ## Normal à mesa e paralelo à parede usar até 12
-            # u = np.array([2, 1, 0]) ## Normal à mesa e com inclinaçao com a parede eu tenho que usar ate 10
+            # u = np.array([1, 0, 0]) ## Normal à mesa e paralelo à parede usar até 12
+            u = np.array([2, 1, 0]) ## Normal à mesa e com inclinaçao com a parede eu tenho que usar ate 10
             v = np.array([0, 0, 1])
 
             b = np.array([-137, 645, 25])
@@ -272,7 +274,7 @@ class RobotController:
 
             px, py, pz = sc.calc_semi_circ(c, u, v)
 
-            """Usar range(4,12) para paralelo à parede e range(4,10) com inclinaçao com a parede"""
+            """Usar range(4,11) para paralelo à parede e range(4,10) com inclinaçao com a parede"""
             for i in range(4,10):
                 P_atual = np.array([px[i], py[i], pz[i]])
                 P_proximo = np.array([px[i+1], py[i+1], pz[i+1]])
@@ -299,21 +301,33 @@ class RobotController:
                     time.sleep(15)
                 else:
                     time.sleep(5)
-                # === ADICIONAR ESTE BLOCO NO FINAL DA FUNÇÃO ===
-                print("Realizando a captura de imagem da calibração...")
-                ret, frame = cap.read()
 
-                if ret:
-                    os.makedirs("capturas", exist_ok=True)
+                # Captura pontual: abre a câmera, descarta warmup e fecha logo em seguida
+                print(f"Realizando a captura de imagem da calibração (posição {i})...")
+                if camera is not None:
+                    frame = camera.capture_frame(warmup_frames=5)
+                else:
+                    cap = cv2.VideoCapture(0)
+                    frame = None
+                    if cap.isOpened():
+                        for _ in range(5):
+                            ret, f = cap.read()
+                            if ret:
+                                frame = f
+                        cap.release()
+
+                if frame is not None:
+                    pasta_capturas = os.path.join(os.path.dirname(os.path.abspath(__file__)), "capturas")
+                    os.makedirs(pasta_capturas, exist_ok=True)
                     nome_arquivo = f"pos(x={px[i]:.2f}__y={py[i]:.2f}__z={pz[i]:.2f}).jpg"
-                    caminho_arquivo = os.path.join("capturas", nome_arquivo)
+                    caminho_arquivo = os.path.join(pasta_capturas, nome_arquivo)
                     sucesso = cv2.imwrite(caminho_arquivo, frame)
                     if sucesso:
                         print(f"Imagem salva com sucesso como {caminho_arquivo}")
                     else:
                         print(f"Erro: OpenCV falhou ao salvar {caminho_arquivo}")
                 else:
-                    print("Erro: Falha ao ler o frame da câmera já aberta.")
-                time.sleep(2)
+                    print("Erro: Falha ao capturar frame da câmera.")
+                time.sleep(1)
 
             self.enviar_juntas(0, 0, 0, 0, 0, 0)
