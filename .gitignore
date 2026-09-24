@@ -2,6 +2,7 @@
 */.venv/
 /project/
 __pycache__/
+*.md
 *.pyc
 capturas/
 gcode_log.txt

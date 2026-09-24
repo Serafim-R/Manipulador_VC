@@ -230,3 +230,54 @@ def calculo_angulos_abc_semi_circ(R, P):
     theta5 = -theta5
 
     return theta4, theta5, theta6
+
+# ---------- CINEMÁTICA DIRETA ----------
+
+# Parâmetros DH (Craig) na ordem das juntas 1..6
+_DH = [
+    (d1, a1_1, alpha1_1),
+    (d2, a2_1, alpha2_1),
+    (d3, a3_1, alpha3_1),
+    (d4, a4_1, alpha4_1),
+    (d5, a5_1, alpha5_1),
+    (d6, a6_1, alpha6_1),
+]
+
+
+def cinematica_direta(j1, j2, j3, A, B, C):
+    """Ângulos das juntas (graus, convenção do robô) -> T_flange_base (4x4).
+
+    É o caminho inverso de `calculo_angulos` + `calculo_angulos_abc*`: aquelas
+    devolvem theta2 + 90 e invertem o sinal de B, então aqui desfazemos as duas
+    coisas antes de montar a cadeia DH.
+
+    Usada pela calibração mão-olho para saber a pose REAL do flange em cada
+    foto — inclusive quando a rotina de captura altera os ângulos depois de
+    calculá-los (é o caso do `C = 0`).
+    """
+    thetas = np.deg2rad([j1, j2 - 90.0, j3, A, -B, C])
+
+    T = np.eye(4)
+    for (d, a, alpha), theta in zip(_DH, thetas):
+        T = T @ np.asarray(matriz_trans_np(d, a, theta, alpha))
+    return T
+
+
+def ponto_alcancavel(x, y, z):
+    """O punho consegue chegar em (x, y, z)? Coordenadas no frame da BASE.
+
+    `calculo_angulos` resolve theta3 com um arctan2 que contem
+    sqrt(a4^2 + d4^2 - K^2). Quando o ponto esta fora do envelope de
+    trabalho esse radicando fica negativo e a funcao devolve NaN em silencio
+    — que viraria "G1 Ynan Znan" no GRBL. Use esta checagem antes de mover.
+    """
+    theta1 = np.arctan2(y, x)
+
+    x1 = np.cos(theta1)*x + np.sin(theta1)*y
+    z1 = z - d1
+
+    K = (np.power(x1, 2) + np.power(z1, 2) + np.power(a2_1, 2)
+         - 2*x1*a2_1 - np.power(a3_1, 2) - np.power(a4_1, 2)
+         - np.power(d4, 2)) / (2*a3_1)
+
+    return bool(np.power(K, 2) <= np.power(a4_1, 2) + np.power(d4, 2))

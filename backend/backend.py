@@ -16,6 +16,8 @@ class Backend(QObject):
 
     angleChanged = Signal(float, float, float)
 
+    jointsChanged = Signal(float, float, float, float, float, float)
+
     statusChanged = Signal(str)
 
     logMessage = Signal(str)
@@ -51,6 +53,7 @@ class Backend(QObject):
     def startCamera(self):
 
         self.controller.start_camera()
+        self.controller.publicar_estado_robo()
 
 
     @Slot()
@@ -122,3 +125,15 @@ class Backend(QObject):
 
     def addLog(self, texto):
          self.logMessage.emit(texto)
+
+    def updatePosition(self, x, y, z):
+         self.positionChanged.emit(float(x), float(y), float(z))
+
+    def updateJoints(self, j1, j2, j3, j4, j5, j6):
+         self.jointsChanged.emit(float(j1), float(j2), float(j3), float(j4), float(j5), float(j6))
+         # Mantém compatibilidade com angleChanged para os 3 ângulos finais do punho (j4, j5, j6)
+         self.angleChanged.emit(float(j4), float(j5), float(j6))
+
+    @Slot()
+    def syncRobotState(self):
+         self.controller.publicar_estado_robo()

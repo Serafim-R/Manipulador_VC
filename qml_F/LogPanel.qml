@@ -80,12 +80,23 @@ Item {
                 font.pointSize: 15
                 font.bold: true
 
-                TextEdit {
-                    id: textEdit
-                    width: parent.width - 20
-                    height: 143
-                    text: qsTr("Objetos...")
-                    font.pixelSize: 12
+                ScrollView {
+                    anchors.fill: parent
+                    clip: true
+
+                    TextArea {
+                        id: textEdit
+                        readOnly: true
+                        selectByMouse: true
+                        font.pixelSize: 13
+                        wrapMode: TextEdit.Wrap
+                        placeholderText: qsTr("Nenhum objeto detectado ainda...")
+                        background: Rectangle {
+                            color: "#f8f9fa"
+                            radius: 4
+                            border.color: "#dee2e6"
+                        }
+                    }
                 }
             }
 
@@ -94,19 +105,51 @@ Item {
                 width: row_results.width / 2 - 5
                 height: 200
 
-                title: qsTr("Função")
+                title: qsTr("Logs e Ações")
                 font.pointSize: 15
                 font.bold: true
 
-                TextEdit {
-                    id: textEdit1
-                    width: parent.width - 20
-                    height: 143
-                    text: qsTr("Funções...")
-                    font.pixelSize: 12
+                ScrollView {
+                    anchors.fill: parent
+                    clip: true
+
+                    TextArea {
+                        id: textEdit1
+                        readOnly: true
+                        selectByMouse: true
+                        font.pixelSize: 13
+                        wrapMode: TextEdit.Wrap
+                        placeholderText: qsTr("Aguardando inicialização do sistema...")
+                        background: Rectangle {
+                            color: "#f8f9fa"
+                            radius: 4
+                            border.color: "#dee2e6"
+                        }
+                    }
                 }
             }
         }
     }
 
+    Connections {
+        target: backend
+
+        function onLogMessage(texto) {
+            var agora = new Date()
+            var hh = String(agora.getHours()).padStart(2, '0')
+            var mm = String(agora.getMinutes()).padStart(2, '0')
+            var ss = String(agora.getSeconds()).padStart(2, '0')
+            var timestamp = "[" + hh + ":" + mm + ":" + ss + "] "
+            textEdit1.append(timestamp + texto)
+        }
+
+        function onObjectDetected(classe) {
+            var agora = new Date()
+            var hh = String(agora.getHours()).padStart(2, '0')
+            var mm = String(agora.getMinutes()).padStart(2, '0')
+            var ss = String(agora.getSeconds()).padStart(2, '0')
+            var timestamp = "[" + hh + ":" + mm + ":" + ss + "] "
+            textEdit.append(timestamp + classe)
+        }
+    }
 }

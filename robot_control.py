@@ -4,9 +4,11 @@ import os
 import numpy as np
 import bezier as bz
 import ik_craig as ik
+from ik_craig import de as de_ferramenta
 from config import GCODE_LOG
 from ventosa_control import VentosaController
 import backend.calibration.semi_circ as sc
+import json
 import cv2
 
 class RobotController:
@@ -23,6 +25,23 @@ class RobotController:
                             [1, 0, 0]])
         self.base_offset = np.array([-137, 645, 25])
         self.modo_juntas = False
+
+        # Ultimos angulos de junta REALMENTE enviados ao GRBL, na convencao
+        # do robo (j1..j6). E a partir deles que pose_flange_atual() calcula
+        # a pose do flange — Ri/P0 sao a pose NOMINAL pedida, que nem sempre
+        # e a que o robo assumiu.
+        self.ultimos_angulos = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+        # Callback opcional chamado a cada passo do movimento:
+        # callback(x_mundo, y_mundo, z_mundo, j1, j2, j3, j4, j5, j6)
+        self.callback_posicao = None
+
+    def posicao_mundo(self):
+        """Retorna a posição atual (X, Y, Z) no frame de mundo."""
+        if self.P0 is not None:
+            p = self.P0 + self.base_offset
+            return (float(p[0]), float(p[1]), float(p[2]))
+        return (0.0, 0.0, 0.0)
 
     def interpolar_abc(self, R_ini, P_ini, R_fim, P_fim, n=21):
         """Interpola linearmente os ângulos do pulso (A, B, C) entre a pose inicial e a final."""
@@ -46,12 +65,43 @@ class RobotController:
             self.unity.send_angles(theta1, theta2, -theta3, A[i], B[i], -C[i], feedrate)
             self.serial.send(f"G1 X{theta1} Y{theta2} Z{theta3} A{A_grbl} B{B_grbl} C{C_grbl} F{feedrate}")
 
+            # As letras do GRBL nao seguem a ordem das juntas: A=j4, B=j6, C=j5.
+            self.ultimos_angulos = (theta1, theta2, theta3,
+                                    A_grbl, C_grbl, B_grbl)
+
+            if self.callback_posicao:
+                xw = float(x[i] + self.base_offset[0])
+                yw = float(y[i] + self.base_offset[1])
+                zw = float(z[i] + self.base_offset[2])
+                self.callback_posicao(xw, yw, zw, *self.ultimos_angulos)
+
     def enviar_juntas(self, j1, j2, j3, j4, j5, j6):
         """Envia um G1 direto com os 6 ângulos das juntas (valores GRBL) e espelha no Unity.
         Ativa o modo juntas: bloqueia trajetórias/rotina até o Home ser usado."""
         self.modo_juntas = True
         self.serial.send(f"G1 X{j1} Y{j2} Z{j3} A{j4} B{j6} C{j5} F800")
         self.unity.send_angles(j1, j2, -j3, j4, j5, j6)
+        self.ultimos_angulos = (j1, j2, j3, j4, j5, j6)
+
+        if self.callback_posicao:
+            pw = self.posicao_mundo()
+            self.callback_posicao(pw[0], pw[1], pw[2], j1, j2, j3, j4, j5, j6)
+
+    def pose_flange_atual(self):
+        """Pose do flange em relacao a BASE (4x4), por cinematica direta dos
+        ultimos angulos enviados ao GRBL.
+
+        E esta a pose que a etapa 3 precisa: T_cam_flange (da calibracao
+        mao-olho) tambem esta no frame do flange/base, entao os dois se
+        encaixam direto. Usar Ri/P0 no lugar disso da erro, porque eles
+        guardam a pose PEDIDA (e P0 esta no frame de mundo, nao da base).
+
+        Devolve None se nenhum movimento foi executado ainda.
+        """
+        if self.ultimos_angulos is None:
+            return None
+
+        return ik.cinematica_direta(*self.ultimos_angulos)
 
     def calcular_tempo_trajetoria(self, x, y, z, theta4, theta5, theta6, feedrate=800, fator_seg=1.2):
         """Estima o tempo (s) da trajetória pela distância percorrida em cada segmento dividida pelo feedrate."""
@@ -96,6 +146,27 @@ class RobotController:
 
         return x1, y1, z1
     
+    # Orientacao final usada por mover_para(): ferramenta apontando para baixo
+    R_FERRAMENTA_PARA_BAIXO = np.array([[0, -1, 0],
+                                        [-1, 0, 0],
+                                        [0, 0, -1]])
+
+    def alvo_alcancavel(self, x, y, z):
+        """(x, y, z) esta dentro do envelope de trabalho?
+
+        Recebe as MESMAS coordenadas que mover_para(): frame de MUNDO e
+        ponta da ferramenta. Faz a mesma conversao que mover_para faz
+        (mundo -> base, ponta -> punho) antes de checar.
+
+        Use isto para filtrar as deteccoes da CNN: a camera enxerga uma area
+        maior que a que o braco alcanca, entao nem todo objeto detectado da
+        para pegar.
+        """
+        P = np.array([float(x), float(y), float(z)]) - self.base_offset
+        punho = P - de_ferramenta * self.R_FERRAMENTA_PARA_BAIXO[:, -1]
+
+        return ik.ponto_alcancavel(*punho)
+
     def mover_para(self, x, y, z, feedrate=800):
         """Move o efetuador ate o ponto (x, y, z), mantendo a orientacao
         atual (Ri), via trajetoria Bezier. Usado para movimentacao manual
@@ -104,6 +175,12 @@ class RobotController:
         if self.modo_juntas:
             print("Modo juntas ativo — use o Home antes de um movimento cartesiano.")
             return None, None, None
+        if not self.alvo_alcancavel(x, y, z):
+            # Sem isto a cinematica inversa devolveria NaN em silencio e o
+            # G-code sairia como "G1 Ynan Znan".
+            print(f"Ponto ({x:.1f}, {y:.1f}, {z:.1f}) fora do alcance do braco.")
+            return None, None, None
+
         b = np.array([-137, 645, 25])
         P3 = np.array([x, y, z])
         P3 -= b
@@ -148,6 +225,11 @@ class RobotController:
         self.serial.send(f"G1 X{neg[0]:g} Y{neg[1]:g} Z{neg[2]:g} A{neg[3]:g} B{neg[4]:g} C{neg[5]:g} F800")
         self.serial.send("G92 X0 Y0 Z0 A0 B0 C0")
         self.serial.send("G1 X0 Y0 Z0 A0 B0 C0 F800")
+
+        # O braco terminou com todas as juntas em zero. Sem atualizar isto,
+        # pose_flange_atual() continuaria devolvendo a pose ANTERIOR, e a
+        # conversao pixel -> mm sairia errada em silencio.
+        self.ultimos_angulos = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
     def rotina_lapis_suporte(self, plot_callback=None):
         """Máquina de estados que pega o lápis da mesa e o encaixa no suporte, desenhando no gráfico quando há callback."""
@@ -262,10 +344,49 @@ class RobotController:
         x, y, z = self.home()
         if plot_callback: plot_callback(list(x), list(y), list(z), False)
 
-    def rotina_captura_calibracao(self, camera=None):
+    ARQUIVO_POSES_CALIBRACAO = "poses_calibracao.json"
 
-            # u = np.array([1, 0, 0]) ## Normal à mesa e paralelo à parede usar até 12
-            u = np.array([2, 1, 0]) ## Normal à mesa e com inclinaçao com a parede eu tenho que usar ate 10
+    def _registrar_pose_calibracao(self, pasta, nome_imagem, j1, j2, j3, A, B, C, rota):
+        """Anexa a pose do flange de uma foto ao poses_calibracao.json.
+
+        O arquivo é um dicionário {nome_da_imagem: {...}} e vai sendo
+        atualizado foto a foto, então as duas rotas (que são duas chamadas
+        separadas desta rotina) acabam no mesmo arquivo. Reexecutar a rotina
+        sobrescreve as mesmas chaves, sem duplicar nada.
+        """
+        caminho = os.path.join(pasta, self.ARQUIVO_POSES_CALIBRACAO)
+
+        poses = {}
+        if os.path.exists(caminho):
+            try:
+                with open(caminho, "r", encoding="utf-8") as f:
+                    poses = json.load(f)
+            except (json.JSONDecodeError, OSError) as erro:
+                print(f"Aviso: {caminho} ilegível ({erro}); recriando do zero.")
+                poses = {}
+
+        T_flange_base = ik.cinematica_direta(j1, j2, j3, A, B, C)
+
+        poses[nome_imagem] = {
+            "juntas": [float(j1), float(j2), float(j3), float(A), float(B), float(C)],
+            "T_flange_base": T_flange_base.tolist(),
+            "rota": int(rota),
+        }
+
+        with open(caminho, "w", encoding="utf-8") as f:
+            json.dump(poses, f, indent=2)
+
+    def rotina_captura_calibracao(self, rota=1, camera=None):
+
+            u1 = np.array([1, 0, 0]) ## Normal à mesa e paralelo à parede usar até 11
+            l1 = 11
+            u2 = np.array([2, 1, 0]) ## Normal à mesa e com inclinaçao com a parede eu tenho que usar ate 10
+            l2 = 10
+            u, l = np.array([0, 0, 0]), int() # Inicializa as variáveis u e l como o tipo np.array e inteiro, respectivamente
+            if rota == 1:
+                u = u1
+                l = l1
+            else: u, l = u2, l2
             v = np.array([0, 0, 1])
 
             b = np.array([-137, 645, 25])
@@ -275,7 +396,7 @@ class RobotController:
             px, py, pz = sc.calc_semi_circ(c, u, v)
 
             """Usar range(4,11) para paralelo à parede e range(4,10) com inclinaçao com a parede"""
-            for i in range(4,10):
+            for i in range(4,l):
                 P_atual = np.array([px[i], py[i], pz[i]])
                 P_proximo = np.array([px[i+1], py[i+1], pz[i+1]])
                 x, y, z = ik.calculo_angulos(px[i], py[i], pz[i])
@@ -324,6 +445,15 @@ class RobotController:
                     sucesso = cv2.imwrite(caminho_arquivo, frame)
                     if sucesso:
                         print(f"Imagem salva com sucesso como {caminho_arquivo}")
+                        # Registra a pose REAL do flange junto com a foto. O nome
+                        # do arquivo só guarda x/y/z; a calibração mão-olho também
+                        # precisa da orientação, e ela não dá para ser deduzida do
+                        # nome — ainda mais porque o C é zerado logo acima. Por
+                        # isso gravamos a cinemática direta dos ângulos que foram
+                        # de fato enviados ao GRBL.
+                        self._registrar_pose_calibracao(
+                            pasta_capturas, nome_arquivo, x, y, z, A, B, C, rota
+                        )
                     else:
                         print(f"Erro: OpenCV falhou ao salvar {caminho_arquivo}")
                 else:

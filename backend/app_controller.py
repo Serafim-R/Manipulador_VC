@@ -1,10 +1,15 @@
 import os
+import time
 
 from backend.camera.camera_manager import CameraManager
 from backend.camera.camera_thread import CamThread
 from backend.camera.detection_thread import DetectionThread
 from backend.robot.robot_thread import RobotActionThread
 from backend.calibration.vision_to_robot import VisionToRobot
+
+from backend.calibration.calibracao_intrinseca import calibrate_1
+from backend.calibration.calibracao_mao_olho import calibrate_2
+from ferramentas.limpar_fotos import limpar_imagens
 
 from yolo.yolo import YOLODetector
 
@@ -22,7 +27,34 @@ CALIB_DIR = os.path.join(
 INTRINSIC_PATH = os.path.join(CALIB_DIR, "calibracao_intrinseca.npz")
 HANDEYE_PATH = os.path.join(CALIB_DIR, "calibracao_mao_olho.npz")
 
-Z_CAMERA_MM = 350.0 #< --- aqui eu preciso da informação da altura em mm
+# Altura da superficie onde os objetos estao apoiados, no frame de MUNDO
+# (o mesmo frame que robot_control.mover_para() recebe). A mesa e z = 0 se o
+# tabuleiro da calibracao estava apoiado nela.
+#
+# Nao e mais preciso "chutar" a distancia da camera ate o objeto: a conversao
+# usa intersecao raio-plano, entao o unico dado fisico necessario e a ALTURA
+# DA MESA. Meca com regua e ajuste aqui.
+# (a calibracao mao-olho atual estima o tabuleiro em z ~ +21 mm neste frame)
+Z_MESA_MUNDO = 0.0
+
+# Altura de cada objeto, em mm, por classe da CNN. Serve para corrigir o
+# paralaxe: o centro da bbox e o centroide visual do objeto (a ~meia altura),
+# nao o ponto onde ele encosta na mesa. Sem isso o alvo sai deslocado para
+# longe do eixo da camera — ~15 mm para um objeto de 50 mm na borda da imagem.
+#
+# MEDIR com paquimetro e preencher. Classe ausente usa ALTURA_PADRAO_MM.
+ALTURA_OBJETOS_MM = {
+    "Tampa-porca": 0.0,
+    "base": 0.0,
+    "sensor": 0.0,
+}
+ALTURA_PADRAO_MM = 0.0
+
+# Pose fixa de observacao ("posicao de buscar"), no frame de MUNDO e em
+# coordenadas da PONTA da ferramenta — e o que mover_para() espera.
+# Daqui a camera precisa enxergar toda a regiao da mesa onde os objetos ficam.
+# Ajuste para a sua bancada e confira com ferramentas/checar_pose_busca.py.
+POSICAO_BUSCA = (-300.0, 210.0, 400.0)
 
 
 class ApplicationController:
@@ -74,6 +106,7 @@ class ApplicationController:
         self.ventosa = VentosaController()
 
         self.robot = RobotController(self.serial, self.unity, self.ventosa)
+        self.robot.callback_posicao = self._on_robot_step
 
         # configuracao inicial do GRBL, igual ao main.py do projeto do gemeo digital
         self.serial.send_settings()
@@ -150,7 +183,10 @@ class ApplicationController:
 
         self.backend.statusChanged.emit("Capturando frame...")
 
-        self._pose_na_captura = (self.robot.Ri.copy(), self.robot.P0.copy())
+        # Pose REAL do flange (cinematica direta dos angulos enviados). Ri/P0
+        # nao servem aqui: guardam a pose pedida da PONTA, no frame de mundo,
+        # enquanto a mao-olho trabalha com o FLANGE no frame da base.
+        self._pose_na_captura = self.robot.pose_flange_atual()
 
         # consome o frame do stream em vez de disputar /dev/video0
         self.detection_thread = DetectionThread(self.camera_thread, self.detector)
@@ -174,33 +210,51 @@ class ApplicationController:
             self.backend.addLog("Nenhum objeto detectado")
             return
 
-        R_flange_base, t_flange_base = self._pose_na_captura
+        T_flange_base = self._pose_na_captura
 
         for d in detections:
 
             self.backend.objectDetected.emit(d["class"])
- 
+
             log = f"Detectado: {d['class']} ({d['confidence']:.2f})"
- 
-            if self.vision_to_robot is not None:
- 
-                x1, y1, x2, y2 = d["bbox"]
-                u = (x1 + x2) / 2.0
-                v = (y1 + y2) / 2.0
- 
-                vetor_mm = self.vision_to_robot.vetor_para_deteccao(
-                    u, v, Z_CAMERA_MM, R_flange_base, t_flange_base
-                )
- 
-                d["vetor_mm"] = vetor_mm.tolist()
- 
-                log += (
-                    f" -> X={vetor_mm[0]:.1f} Y={vetor_mm[1]:.1f} "
-                    f"Z={vetor_mm[2]:.1f} mm"
-                )
-            else:
+
+            if self.vision_to_robot is None:
                 log += " (calibracao pixel->mm nao disponivel)"
- 
+
+            elif T_flange_base is None:
+                log += " (pose do robo desconhecida: mova para a posicao de busca antes)"
+
+            else:
+                try:
+                    # (X, Y, Z) em mm no frame de MUNDO, ja pronto para
+                    # entrar em robot_control.mover_para().
+                    altura = ALTURA_OBJETOS_MM.get(d["class"], ALTURA_PADRAO_MM)
+
+                    vetor_mm = self.vision_to_robot.deteccao_para_mundo(
+                        d["bbox"],
+                        T_flange_base,
+                        z_plano_mundo=Z_MESA_MUNDO,
+                        altura_objeto_mm=altura,
+                    )
+
+                    d["vetor_mm"] = vetor_mm.tolist()
+
+                    # A camera enxerga mais mesa do que o braco alcanca, entao
+                    # nem todo objeto detectado da para pegar. Marcar aqui
+                    # evita mandar um alvo impossivel para a rotina de pega.
+                    d["alcancavel"] = self.robot.alvo_alcancavel(*vetor_mm)
+
+                    log += (
+                        f" -> X={vetor_mm[0]:.1f} Y={vetor_mm[1]:.1f} "
+                        f"Z={vetor_mm[2]:.1f} mm"
+                    )
+
+                    if not d["alcancavel"]:
+                        log += " [FORA DE ALCANCE]"
+
+                except ValueError as erro:
+                    log += f" (conversao pixel->mm falhou: {erro})"
+
             self.backend.addLog(log)
 
     def _on_detection_error(self, message):
@@ -289,11 +343,41 @@ class ApplicationController:
 
     def _rodar_captura_calibracao(self):
 
+        # Se houver imagens na pasta, devem ser excluídas
+        limpar_imagens()
+
         # a câmera continua transmitindo: a rotina pede à CamThread um frame
         # fresco em cada pose, sem fechar o dispositivo e sem congelar o
         # preview. CamThread.capture_frame tem a mesma assinatura que
         # CameraManager.capture_frame, então robot_control não muda.
-        self.robot.rotina_captura_calibracao(camera=self.camera_thread)
+
+        self.robot.rotina_captura_calibracao(1, camera=self.camera_thread)
+        time.sleep(15)
+        self.robot.rotina_captura_calibracao(2, camera=self.camera_thread)
+        time.sleep(15)
+        self.backend.addLog("Iniciando processamento das imagens")
+
+        # Etapa 1: intrínseca (K, dist) a partir das fotos recém-capturadas.
+        # Precisa rodar sempre, porque um .npz de outra resolução de câmera
+        # estraga silenciosamente a etapa 2.
+        calibrate_1()
+        self.backend.addLog("Calibração intrínseca concluída")
+
+        # Etapa 2: mão-olho (T_cam_flange). Usa as fotos de capturas/ junto
+        # com o poses_calibracao.json que a rotina de captura acabou de gravar.
+        calibrate_2()
+        self.backend.addLog("Calibração mão-olho concluída")
+
+        # Recarrega o pipeline pixel -> mm com a calibração nova; senão ele
+        # continuaria usando a que foi lida na inicialização do app.
+        try:
+            self.vision_to_robot = VisionToRobot(INTRINSIC_PATH, HANDEYE_PATH)
+            self.backend.addLog("Calibração pixel -> mm recarregada")
+        except FileNotFoundError as e:
+            self.backend.addLog(f"Falha ao recarregar calibração: {e}")
+
+        self.backend.addLog("Etapa de processamento concluída")
+
         
 
     def _executar_no_robo(self, action, *args):
@@ -305,10 +389,22 @@ class ApplicationController:
 
         self.robot_thread.start()
 
+    def _on_robot_step(self, x, y, z, j1, j2, j3, j4, j5, j6):
+        self.backend.updatePosition(x, y, z)
+        self.backend.updateJoints(j1, j2, j3, j4, j5, j6)
+
+    def publicar_estado_robo(self):
+        if hasattr(self, 'robot') and self.robot:
+            x, y, z = self.robot.posicao_mundo()
+            self.backend.updatePosition(x, y, z)
+            if self.robot.ultimos_angulos:
+                self.backend.updateJoints(*self.robot.ultimos_angulos)
+
     def _on_robot_ok(self, message):
 
         self.backend.updateStatus("Pronto")
         self.backend.addLog(message)
+        self.publicar_estado_robo()
 
     def _on_robot_error(self, message):
 
@@ -316,6 +412,7 @@ class ApplicationController:
 
         self.backend.updateStatus("Erro no movimento")
         self.backend.addLog(message)
+        self.publicar_estado_robo()
 
         # a rotina pode ter sido interrompida no meio da sucao —
         # garante que a bomba/valvula nao fiquem ligadas indefinidamente
