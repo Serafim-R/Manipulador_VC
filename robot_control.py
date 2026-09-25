@@ -197,6 +197,56 @@ class RobotController:
 
         return x1, y1, z1
 
+    def rotina_pegar_objeto(self, alvo, altura_aproximacao=100):
+        """Pega o objeto em `alvo` (X, Y, Z da PONTA, frame de MUNDO, o mesmo
+        de mover_para), com a ferramenta apontando para baixo, e volta ao Home.
+        Usada com as coordenadas vindas da deteccao (vetor_mm)."""
+
+        if self.modo_juntas:
+            # a deteccao usa enviar_juntas(), que liga o modo juntas e
+            # bloqueia movimentos cartesianos; volta ao Home antes
+            self.home()
+            time.sleep(15)
+
+        if not self.alvo_alcancavel(*alvo):
+            raise ValueError(f"Alvo {alvo} fora do alcance do braco")
+
+        R = self.R_FERRAMENTA_PARA_BAIXO
+        P_obj = np.array(alvo, dtype=float) - self.base_offset
+        P_apr = P_obj + np.array([0, 0, altura_aproximacao])
+
+        self.serial.send("M97 B60 T0.2") # Abre a garra
+
+        # Estado 1: posicao atual -> acima do objeto (Bezier)
+        x, y, z = bz.calculo_pontos(self.P0, P_apr, self.Ri, R)
+        A, B, C = self.interpolar_abc(self.Ri, self.P0, R, P_apr, 21)
+        self.executar_movimento(x, y, z, A, B, C)
+        self.Ri = R
+        self.P0 = P_apr
+        time.sleep(self.calcular_tempo_trajetoria(x, y, z, A, B, C) + 1)
+
+        A = np.full(21, A[-1])
+        B = np.full(21, B[-1])
+        C = np.full(21, C[-1])
+
+        # Estado 2: descer e fechar a garra (Linear)
+        x, y, z = bz.calculo_linear(P_apr, P_obj, R)
+        self.executar_movimento(x, y, z, A, B, C)
+        time.sleep(self.calcular_tempo_trajetoria(x, y, z, A, B, C) + 1)
+        self.serial.send("M97 B0 T0.2") # Fecha a garra
+        time.sleep(1)
+
+        # Estado 3: subir com o objeto (Linear)
+        x, y, z = bz.calculo_linear(P_obj, P_apr, R)
+        self.executar_movimento(x, y, z, A, B, C)
+        self.P0 = P_apr
+        time.sleep(self.calcular_tempo_trajetoria(x, y, z, A, B, C) + 1)
+
+        # (aqui entra o transporte ate o destino, se houver)
+
+        # Estado 4: voltar para Home (Bezier)
+        self.home()
+
 
     def recuperar_do_log(self):
         """Se o último G1 do log não for tudo zero, envia o inverso para

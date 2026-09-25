@@ -35,7 +35,7 @@ HANDEYE_PATH = os.path.join(CALIB_DIR, "calibracao_mao_olho.npz")
 # usa intersecao raio-plano, entao o unico dado fisico necessario e a ALTURA
 # DA MESA. Meca com regua e ajuste aqui.
 # (a calibracao mao-olho atual estima o tabuleiro em z ~ +21 mm neste frame)
-Z_MESA_MUNDO = 0.0
+Z_MESA_MUNDO = 5.0
 
 # Altura de cada objeto, em mm, por classe da CNN. Serve para corrigir o
 # paralaxe: o centro da bbox e o centroide visual do objeto (a ~meia altura),
@@ -44,11 +44,11 @@ Z_MESA_MUNDO = 0.0
 #
 # MEDIR com paquimetro e preencher. Classe ausente usa ALTURA_PADRAO_MM.
 ALTURA_OBJETOS_MM = {
-    "Tampa-porca": 0.0,
-    "base": 0.0,
-    "sensor": 0.0,
+    "Tampa-porca": 10.0,
+    "base": 30.0,
+    "sensor": 25.0,
 }
-ALTURA_PADRAO_MM = 0.0
+ALTURA_PADRAO_MM = 10.0
 
 # Pose fixa de observacao ("posicao de buscar"), no frame de MUNDO e em
 # coordenadas da PONTA da ferramenta — e o que mover_para() espera.
@@ -72,6 +72,9 @@ class ApplicationController:
         self.detector = YOLODetector()
 
         self.detection_thread = None
+
+        # resultado da ultima deteccao, usado pelo botao Manipular
+        self.ultimas_deteccoes = []
 
         self.vision_to_robot = None
 
@@ -206,6 +209,9 @@ class ApplicationController:
 
         self.backend.updateStatus(f"{len(detections)} objeto(s) detectado(s)")
 
+        # os dicts sao preenchidos com vetor_mm/alcancavel no loop abaixo
+        self.ultimas_deteccoes = detections
+
         if not detections:
             self.backend.addLog("Nenhum objeto detectado")
             return
@@ -293,10 +299,26 @@ class ApplicationController:
             self.backend.addLog("Ja existe um movimento em andamento")
             return
 
-        self.backend.updateStatus("Executando rotina: lapis / suporte")
-        self.backend.addLog("Rotina lapis/suporte iniciada")
+        candidatos = [d for d in self.ultimas_deteccoes
+                      if "vetor_mm" in d and d.get("alcancavel")]
 
-        self._executar_no_robo(self.robot.rotina_lapis_suporte)
+        if not candidatos:
+            self.backend.addLog("Nenhum objeto alcancavel: rode Detectar antes")
+            return
+
+        d = max(candidatos, key=lambda d: d["confidence"])
+        x, y, z = d["vetor_mm"]
+
+        # vetor_mm devolve o Z da MESA; a garra fecha na meia altura do objeto
+        # (para ventosa, use a altura inteira: encostar no topo)
+        z += ALTURA_OBJETOS_MM.get(d["class"], ALTURA_PADRAO_MM) / 2
+
+        self.backend.updateStatus(f"Pegando {d['class']}")
+        self.backend.addLog(
+            f"Pegando {d['class']} em X={x:.1f} Y={y:.1f} Z={z:.1f} mm"
+        )
+
+        self._executar_no_robo(self.robot.rotina_pegar_objeto, (x, y, z))
 
     def manipulate_ventosa(self):
 
@@ -380,27 +402,44 @@ class ApplicationController:
 
     def reconhecer(self):
     
-            if self.detection_thread and self.detection_thread.isRunning():
-                self.set_status("Deteccao ja em andamento")
-                return
-            if not self.camera._cap or not self.camera._cap.isOpened():
-                self.set_status("Camera indisponivel")
-                return
-    
-            self.controller.enviar_juntas(-110, 0, -20, 0, -105, 0)
-    
-            time.sleep(15)
-    
-            self.camera._timer.stop()
-            self.set_status("Detectando objetos...")
-            self.log_text.append("Iniciando deteccao YOLO...")
-    
-            self.detection_thread = DetectionThread(self.camera._cap, self.detector)
-            self.detection_thread.frame_ready.connect(self._on_frame_ready)
-            self.detection_thread.detections_ready.connect(self._on_detections_ready)
-            self.detection_thread.error_occurred.connect(self._on_detection_error)
-            self.detection_thread.finished.connect(self._on_detection_finished)
-            self.detection_thread.start()        
+        # if self.detection_thread and self.detection_thread.isRunning():
+        #     # self.backend.updateStatus("Deteccao ja em andamento")
+        #     self.backend.addLog("Deteccao ja em andamento")
+        #     return
+        # if not self.camera.cap or not self.camera.cap.isOpened():
+        #     # self.backend.updateStatus("Camera indisponivel")
+        #     self.backend.addLog("Camera indisponivel")
+        #     return
+
+        if self.detection_thread and self.detection_thread.isRunning():
+            self.backend.addLog("Deteccao ja em andamento")
+            return
+
+        if self.robot_thread and self.robot_thread.isRunning():
+            self.backend.addLog("Ja existe um movimento em andamento")
+            return
+
+        self.backend.updateStatus("Movendo para posicao de deteccao...")
+        self.backend.addLog("Movendo robo para posicao de observacao...")
+
+        # Dispara a rotina em segundo plano
+        self.robot_thread = RobotActionThread(self._mover_para_observacao)
+        
+        # Quando os 15 segundos terminarem na thread secundária, chama o início da detecção
+        self.robot_thread.finishedOk.connect(self._on_posicionamento_ok)
+        self.robot_thread.errorOccurred.connect(self._on_posicionamento_error)
+
+        self.robot_thread.start()
+
+    def _mover_para_observacao(self):
+        """Executado dentro da RobotActionThread (background)."""
+        # 1. Envia os ângulos ao GRBL
+        self.robot.enviar_juntas(-110, 0, -20, 0, -105, 0)
+        
+        # 2. Aguarda os motores físicos chegarem na posição.
+        # Como está rodando na RobotActionThread, NÃO trava a GUI nem o preview da câmera!
+        time.sleep(15)
+
 
     def _executar_no_robo(self, action, *args):
 

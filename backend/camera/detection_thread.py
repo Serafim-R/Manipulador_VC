@@ -51,11 +51,13 @@ class DetectionThread(QThread):
         print("Frame capturado, rodando YOLO...")
 
         try:
+            print("Começou a anotar")
             annotated, detections = self.detector.detect(frame)
         except Exception as e:
             self.errorOccurred.emit(f"Erro na deteccao YOLO: {e}")
             return
 
+        print("tenta converter")
         rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
 
         h, w, ch = rgb.shape

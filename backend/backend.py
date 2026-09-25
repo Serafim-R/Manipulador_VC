@@ -70,7 +70,7 @@ class Backend(QObject):
 
         self.cameraFrameChanged.emit(image)
 
-
+    @Slot(QImage)
     def showAnnotated(self, image):
         """Exibe o frame anotado do YOLO e o segura por alguns segundos."""
 
