@@ -378,7 +378,29 @@ class ApplicationController:
 
         self.backend.addLog("Etapa de processamento concluída")
 
-        
+    def reconhecer(self):
+    
+            if self.detection_thread and self.detection_thread.isRunning():
+                self.set_status("Deteccao ja em andamento")
+                return
+            if not self.camera._cap or not self.camera._cap.isOpened():
+                self.set_status("Camera indisponivel")
+                return
+    
+            self.controller.enviar_juntas(-110, 0, -20, 0, -105, 0)
+    
+            time.sleep(15)
+    
+            self.camera._timer.stop()
+            self.set_status("Detectando objetos...")
+            self.log_text.append("Iniciando deteccao YOLO...")
+    
+            self.detection_thread = DetectionThread(self.camera._cap, self.detector)
+            self.detection_thread.frame_ready.connect(self._on_frame_ready)
+            self.detection_thread.detections_ready.connect(self._on_detections_ready)
+            self.detection_thread.error_occurred.connect(self._on_detection_error)
+            self.detection_thread.finished.connect(self._on_detection_finished)
+            self.detection_thread.start()        
 
     def _executar_no_robo(self, action, *args):
 

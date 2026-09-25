@@ -99,7 +99,7 @@ class Backend(QObject):
     @Slot()
     def detect(self):
 
-        self.controller.detect()
+        self.controller.reconhecer()
 
 
     @Slot()
