@@ -205,15 +205,20 @@ class RobotController:
         if self.modo_juntas:
             # a deteccao usa enviar_juntas(), que liga o modo juntas e
             # bloqueia movimentos cartesianos; volta ao Home antes
-            self.home()
+
+            self.enviar_juntas(0, 0, 0, 0, 0, 0)
+            self.modo_juntas = False
             time.sleep(15)
 
         if not self.alvo_alcancavel(*alvo):
             raise ValueError(f"Alvo {alvo} fora do alcance do braco")
 
         R = self.R_FERRAMENTA_PARA_BAIXO
+        print(f"P_objeto = {np.array(alvo, dtype=float)}")
         P_obj = np.array(alvo, dtype=float) - self.base_offset
+        print(f"P_objeto (offset base) = {P_obj}")
         P_apr = P_obj + np.array([0, 0, altura_aproximacao])
+        print(f"P_apr = {P_apr}")
 
         self.serial.send("M97 B60 T0.2") # Abre a garra
 

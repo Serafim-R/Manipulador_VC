@@ -249,7 +249,7 @@ class ApplicationController:
                     # nem todo objeto detectado da para pegar. Marcar aqui
                     # evita mandar um alvo impossivel para a rotina de pega.
                     d["alcancavel"] = self.robot.alvo_alcancavel(*vetor_mm)
-
+                    # A orientação parece estar espelhada, por isso o (-1) no y.
                     log += (
                         f" -> X={vetor_mm[0]:.1f} Y={vetor_mm[1]:.1f} "
                         f"Z={vetor_mm[2]:.1f} mm"

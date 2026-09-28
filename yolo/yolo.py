@@ -8,7 +8,7 @@ DEFAULT_WEIGHTS = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "yolo",
     "pesos",
-    "last.pt"
+    "best.pt"
 )
 
 
