@@ -205,8 +205,7 @@ class RobotController:
         Usada com as coordenadas vindas da deteccao (vetor_mm)."""
 
         if self.modo_juntas:
-            # a deteccao usa enviar_juntas(), que liga o modo juntas e
-            # bloqueia movimentos cartesianos; volta ao Home antes
+            # a deteccao usa enviar_juntas(), que liga o modo juntas e bloqueia movimentos cartesianos; volta ao Home antes
 
             self.enviar_juntas(0, 0, 0, 0, 0, 0)
             self.modo_juntas = False

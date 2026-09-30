@@ -338,6 +338,9 @@ class ApplicationController:
             f"Pegando {d['class']} em X={x:.1f} Y={y:.1f} Z={z:.1f} mm"
         )
 
+        self.backend.updateStatus("Executando rotina: manipular objeto")
+        self.backend.addLog("Rotina manipular objeto iniciada")
+
         self._executar_no_robo(self.robot.rotina_pegar_objeto, (x, y, z))
 
     def manipulate_ventosa(self):
