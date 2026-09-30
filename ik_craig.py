@@ -1,5 +1,7 @@
 import numpy as np
 
+import roboticstoolbox as rtb
+
 a1_1 = 0
 a2_1 = 20.3563
 a3_1 = 261.01
@@ -244,7 +246,7 @@ _DH = [
 ]
 
 
-def cinematica_direta(j1, j2, j3, A, B, C):
+def cinematica_direta_old(j1, j2, j3, A, B, C):
     """Ângulos das juntas (graus, convenção do robô) -> T_flange_base (4x4).
 
     É o caminho inverso de `calculo_angulos` + `calculo_angulos_abc*`: aquelas
@@ -263,21 +265,53 @@ def cinematica_direta(j1, j2, j3, A, B, C):
     return T
 
 
-def ponto_alcancavel(x, y, z):
-    """O punho consegue chegar em (x, y, z)? Coordenadas no frame da BASE.
+def ponto_alcancavel(x, y, z):                                           
+        """Retorna True se o punho (x, y, z) no frame da BASE tiver solucao  
+  cinematica real."""                                                        
+        theta1 = np.arctan2(y, x)                                            
+                                                                             
+        x1 = np.cos(theta1)*x + np.sin(theta1)*y                             
+        z1 = z - d1                                                          
+                                                                             
+        K = (np.power(x1, 2) + np.power(z1, 2) + np.power(a2_1, 2)           
+             - 2*x1*a2_1 - np.power(a3_1, 2) - np.power(a4_1, 2)             
+             - np.power(d4, 2)) / (2*a3_1)  
 
-    `calculo_angulos` resolve theta3 com um arctan2 que contem
-    sqrt(a4^2 + d4^2 - K^2). Quando o ponto esta fora do envelope de
-    trabalho esse radicando fica negativo e a funcao devolve NaN em silencio
-    — que viraria "G1 Ynan Znan" no GRBL. Use esta checagem antes de mover.
-    """
-    theta1 = np.arctan2(y, x)
+        print("antes primeiro teste")                                 
+                                                                             
+        # 1. Verifica se o ponto e geometricamente alcancavel                
+        if np.power(K, 2) > np.power(a4_1, 2) + np.power(d4, 2):             
+            return False           
 
-    x1 = np.cos(theta1)*x + np.sin(theta1)*y
-    z1 = z - d1
+        print("passou primeiro teste")                                          
+                                                                             
+        # 2. (Opcional, recomendado) Checa os limites angulares fisicos dos motores                                                                    
+        t1, t2, t3 = calculo_angulos(x, y, z)                                
+        if np.isnan(t1) or np.isnan(t2) or np.isnan(t3):                     
+            return False                                                     
+        print("passou segundo teste")                                       
+        # Limites reais das juntas (exemplo dos limites das juntas 2 e 3)    
+        if not (-75 <= t2 <= 125):                                           
+            return False
+        print("passou terceiro teste")                                                     
+        if not (-100 <= t3 <= 50):                                           
+            return False                                                     
+        print("passou quarto teste")              
 
-    K = (np.power(x1, 2) + np.power(z1, 2) + np.power(a2_1, 2)
-         - 2*x1*a2_1 - np.power(a3_1, 2) - np.power(a4_1, 2)
-         - np.power(d4, 2)) / (2*a3_1)
+        return True
 
-    return bool(np.power(K, 2) <= np.power(a4_1, 2) + np.power(d4, 2))
+def cinematica_direta(theta1, theta2, theta3, theta4, theta5, theta6):
+    link1 = rtb.RevoluteMDH(a=a1_1,    alpha=np.deg2rad(alpha1_1),  d=d1,    qlim=[0, 2*np.pi])
+    link2 = rtb.RevoluteMDH(a=a2_1,    alpha=np.deg2rad(alpha2_1),  d=d2,    qlim=[np.deg2rad(-75), np.deg2rad(125)], offset=-np.pi/2)
+    link3 = rtb.RevoluteMDH(a=a3_1,    alpha=np.deg2rad(alpha3_1),  d=d3,    qlim=[np.deg2rad(-50), np.deg2rad(100)])
+    link4 = rtb.RevoluteMDH(a=a4_1,    alpha=np.deg2rad(-90),       d=d4,    qlim=[0, 2*np.pi])
+    link5 = rtb.RevoluteMDH(a=0,       alpha=np.deg2rad(90),        d=0,     qlim=[-np.pi/2, np.pi/2])
+    link6 = rtb.RevoluteMDH(a=0,       alpha=np.deg2rad(-90),       d=de,    qlim=[0, 2*np.pi])
+
+    # Criar o robô 6-DOF
+    robot_mdh = rtb.DHRobot([link1, link2, link3, link4, link5, link6], name="Manipulador_Arctos")
+
+    te = robot_mdh.fkine(np.deg2rad([theta1, theta2, theta3, theta4, -theta5, theta6]))
+    te = np.array(te)
+
+    return te[:3,:3], te[:3,-1]

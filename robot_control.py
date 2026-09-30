@@ -37,6 +37,10 @@ class RobotController:
         # callback(x_mundo, y_mundo, z_mundo, j1, j2, j3, j4, j5, j6)
         self.callback_posicao = None
 
+        self.R_baixo = np.array([[ 0,  -1,  0], 
+                                    [ -1, 0,  0], 
+                                    [ 0,  0, -1]]) 
+
     def posicao_mundo(self):
         """Retorna a posição atual (X, Y, Z) no frame de mundo."""
         if self.P0 is not None:
@@ -44,9 +48,12 @@ class RobotController:
             return (float(p[0]), float(p[1]), float(p[2]))
         return (0.0, 0.0, 0.0)
 
-    def interpolar_abc(self, R_ini, P_ini, R_fim, P_fim, n=21):
+    def interpolar_abc(self, R_ini, P_ini, R_fim, P_fim, n=21, A=None, B=None, C=None):
         """Interpola linearmente os ângulos do pulso (A, B, C) entre a pose inicial e a final."""
-        A0, B0, C0 = ik.calculo_angulos_abc(R_ini, P_ini)
+        if A == None and B == None and C == None:
+            A0, B0, C0 = ik.calculo_angulos_abc(R_ini, P_ini)
+        else:
+            A0, B0, C0 = A, B, C
         Af, Bf, Cf = ik.calculo_angulos_abc(R_fim, P_fim)
         return (np.round(np.linspace(A0, Af, n), 2),
                 np.round(np.linspace(B0, Bf, n), 2),
@@ -102,7 +109,18 @@ class RobotController:
         if self.ultimos_angulos is None:
             return None
 
-        return ik.cinematica_direta(*self.ultimos_angulos)
+        resultado = ik.cinematica_direta(*self.ultimos_angulos) 
+
+        # Se retornou a tupla (R, t) com rotação e translação separadas
+        if isinstance(resultado, tuple):
+            R, t = resultado
+            T = np.eye(4)
+            T[:3, :3] = R
+            T[:3, 3] = np.asarray(t).flatten()
+            return T
+
+        # Se já for uma matriz 4x4 direta (fallback)
+        return resultado
 
     def calcular_tempo_trajetoria(self, x, y, z, theta4, theta5, theta6, feedrate=800, fator_seg=1.2):
         """Estima o tempo (s) da trajetória pela distância percorrida em cada segmento dividida pelo feedrate."""
@@ -153,20 +171,18 @@ class RobotController:
                                         [-1, 0, 0],
                                         [0, 0, -1]])
 
-    def alvo_alcancavel(self, x, y, z):
-        """(x, y, z) esta dentro do envelope de trabalho?
-
-        Recebe as MESMAS coordenadas que mover_para(): frame de MUNDO e
-        ponta da ferramenta. Faz a mesma conversao que mover_para faz
-        (mundo -> base, ponta -> punho) antes de checar.
-
-        Use isto para filtrar as deteccoes da CNN: a camera enxerga uma area
-        maior que a que o braco alcanca, entao nem todo objeto detectado da
-        para pegar.
-        """
-        P = np.array([float(x), float(y), float(z)]) - self.base_offset
-        punho = P - de_ferramenta * self.R_FERRAMENTA_PARA_BAIXO[:, -1]
-
+    def alvo_alcancavel(self, x, y, z):                                      
+        """Recebe (x, y, z) da PONTA no frame de MUNDO e verifica se o braco 
+  alcanca                                                                    
+        com a ferramenta apontada para baixo."""                             
+        # 1. Converte do frame de MUNDO para o frame da BASE                 
+        P_base = np.array([float(x), float(y), float(z)]) - self.base_offset 
+                                                                             
+        # 2. Desloca da PONTA da ferramenta para o centro do PUNHO (J5)      
+        # Como a ferramenta aponta para baixo, o punho fica 'de' mm acima no eixo Z                                                                     
+        punho = P_base - de_ferramenta * self.R_FERRAMENTA_PARA_BAIXO[:, -1] 
+                                                                             
+        # 3. Testa a cinematica analitica direta                             
         return ik.ponto_alcancavel(*punho)
 
     def mover_para(self, x, y, z, feedrate=800):
@@ -199,63 +215,31 @@ class RobotController:
 
         return x1, y1, z1
 
-    def rotina_pegar_objeto(self, alvo, altura_aproximacao=100):
+    def rotina_pegar_objeto(self, p0, p3, Ri, Ac, Bc, Cc):
         """Pega o objeto em `alvo` (X, Y, Z da PONTA, frame de MUNDO, o mesmo
         de mover_para), com a ferramenta apontando para baixo, e volta ao Home.
         Usada com as coordenadas vindas da deteccao (vetor_mm)."""
 
         if self.modo_juntas:
             # a deteccao usa enviar_juntas(), que liga o modo juntas e bloqueia movimentos cartesianos; volta ao Home antes
-
-            self.enviar_juntas(0, 0, 0, 0, 0, 0)
             self.modo_juntas = False
+        
+        if not self.alvo_alcancavel(p3[0], p3[1], p3[2]):
+            print("Objeto não alcançavel")
+            return
+        else:
+            self.serial.send("M97 B60 T0.2") # Abrir garra
+            p3 -= self.base_offset
+            x, y, z = bz.calculo_pontos(p0, p3, Ri, self.R_baixo)
+            A, B, C = self.interpolar_abc(Ri, p0, self.R_baixo, p3, 21, Ac, Bc, Cc)
+            self._mover_e_aguardar(x, y, z, A, B, C)
+            self.serial.send("M97 B0 T0.2") # Fecha a garra
+            time.sleep(1)
+            self.P0 = p3
+            self.Ri = self.R_baixo
+            x, y, z = self.home()
             time.sleep(15)
-
-        if not self.alvo_alcancavel(*alvo):
-            raise ValueError(f"Alvo {alvo} fora do alcance do braco")
-
-        R = self.R_FERRAMENTA_PARA_BAIXO
-        print(f"P_objeto = {np.array(alvo, dtype=float)}")
-        P_obj = np.array(alvo, dtype=float) - self.base_offset
-        print(f"P_objeto (offset base) = {P_obj}")
-        P_apr = P_obj + np.array([0, 0, altura_aproximacao])
-        print(f"P_apr = {P_apr}")
-
-        self.serial.send("M97 B60 T0.2") # Abre a garra
-
-        # Estado 1: posicao atual -> acima do objeto (Bezier)
-        x, y, z = bz.calculo_pontos(self.P0, P_apr, self.Ri, R)
-        A, B, C = self.interpolar_abc(self.Ri, self.P0, R, P_apr, 21)
-        self.executar_movimento(x, y, z, A, B, C)
-        self.Ri = R
-        self.P0 = P_apr
-        time.sleep(self.calcular_tempo_trajetoria(x, y, z, A, B, C) + 1)
-
-        A = np.full(21, A[-1])
-        B = np.full(21, B[-1])
-        C = np.full(21, C[-1])
-
-        # Estado 2: descer e fechar a garra (Linear)
-        x, y, z = bz.calculo_linear(P_apr, P_obj, R)
-        self.executar_movimento(x, y, z, A, B, C)
-        time.sleep(self.calcular_tempo_trajetoria(x, y, z, A, B, C) + 1)
-        self.serial.send("M97 B0 T0.2") # Fecha a garra
-        time.sleep(1)
-
-        # Estado 3: subir com o objeto (Linear)
-        x, y, z = bz.calculo_linear(P_obj, P_apr, R)
-        self.executar_movimento(x, y, z, A, B, C)
-        self.P0 = P_apr
-        time.sleep(self.calcular_tempo_trajetoria(x, y, z, A, B, C) + 1)
-
-        # (aqui entra o transporte ate o destino, se houver)
-
-        # Estado 4: voltar para Home (Bezier)
-        self.home()
-        time.sleep(15)
-        self.serial.send("M97 B60 T0.2") # Abre a garra novamente.
-        # time.sleep(2)
-        # self.serial.send("M97 B0 T0.2") # Fecha a garra
+            self.serial.send("M97 B60 T0.2") # Abrir garra
 
 
     def recuperar_do_log(self):
@@ -516,3 +500,18 @@ class RobotController:
                 time.sleep(1)
 
             self.enviar_juntas(0, 0, 0, 0, 0, 0)
+
+    def rotina_manipular(self, p0, p3, Ri, Ac, Bc, Cc):
+        if not self.ponto_alcancavel(p3-self.base_offset):
+            print("Objeto não alcançavel")
+            return
+        else:
+            p3 -= self.base_offset
+            x, y, z = bz.calculo_pontos(p0, p3, Ri, self.R_baixo)
+            A, B, C = self.interpolar_abc(Ri, p0, self.R_baixo, p3, 21, Ac, Bc, Cc)
+            self._mover_e_aguardar(x, y, z, A, B, C)
+            self.P0 = p3
+            self.Ri = self.R_baixo
+            x, y, z = self.home()
+            time.sleep(15)
+            self.serial.send("M97 B60 T0.2")

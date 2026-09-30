@@ -13,6 +13,7 @@ from backend.calibration.correcao_residual import CorrecaoResidual
 from backend.calibration.calibracao_intrinseca import calibrate_1
 from backend.calibration.calibracao_mao_olho import calibrate_2
 from ferramentas.limpar_fotos import limpar_imagens
+import ik_craig as ik
 
 from yolo.yolo import YOLODetector
 
@@ -249,6 +250,8 @@ class ApplicationController:
                     # entrar em robot_control.mover_para().
                     altura = ALTURA_OBJETOS_MM.get(d["class"], ALTURA_PADRAO_MM)
 
+                    print("Chega em vetor_mm")
+
                     vetor_mm = self.vision_to_robot.deteccao_para_mundo(
                         d["bbox"],
                         T_flange_base,
@@ -256,11 +259,14 @@ class ApplicationController:
                         altura_objeto_mm=altura,
                     )
 
+                    print("passou daqui")
+
                     # o bruto (sem correcao) e o que entra nos pontos de
                     # correcao; senao cada ajuste seria feito em cima do
                     # anterior
                     d["vetor_mm_bruto"] = vetor_mm.tolist()
                     vetor_mm = self.correcao.aplicar(vetor_mm)
+                    print("passou pela correção")
                     d["vetor_mm"] = vetor_mm.tolist()
 
                     # A camera enxerga mais mesa do que o braco alcanca, entao
@@ -338,10 +344,13 @@ class ApplicationController:
             f"Pegando {d['class']} em X={x:.1f} Y={y:.1f} Z={z:.1f} mm"
         )
 
+        Rc, Pc = ik.cinematica_direta(-110, 0, -20, 0, -105, 0)
+        Po = [x, y, z]
+
         self.backend.updateStatus("Executando rotina: manipular objeto")
         self.backend.addLog("Rotina manipular objeto iniciada")
 
-        self._executar_no_robo(self.robot.rotina_pegar_objeto, (x, y, z))
+        self._executar_no_robo(self.robot.rotina_pegar_objeto, Pc, Po, Rc, 0, -105, 0)
 
     def manipulate_ventosa(self):
 
