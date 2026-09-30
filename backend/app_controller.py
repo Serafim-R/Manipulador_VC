@@ -1,11 +1,14 @@
 import os
 import time
 
+import numpy as np
+
 from backend.camera.camera_manager import CameraManager
 from backend.camera.camera_thread import CamThread
 from backend.camera.detection_thread import DetectionThread
 from backend.robot.robot_thread import RobotActionThread
 from backend.calibration.vision_to_robot import VisionToRobot
+from backend.calibration.correcao_residual import CorrecaoResidual
 
 from backend.calibration.calibracao_intrinseca import calibrate_1
 from backend.calibration.calibracao_mao_olho import calibrate_2
@@ -26,6 +29,12 @@ CALIB_DIR = os.path.join(
 
 INTRINSIC_PATH = os.path.join(CALIB_DIR, "calibracao_intrinseca.npz")
 HANDEYE_PATH = os.path.join(CALIB_DIR, "calibracao_mao_olho.npz")
+CORRECAO_PATH = os.path.join(CALIB_DIR, "correcao_residual.json")
+
+# Distancia maxima entre a ponta do robo e a deteccao mais proxima para
+# aceitar um ponto de correcao. Acima disso a ponta provavelmente nao esta
+# sobre nenhum dos objetos detectados.
+MAX_DIST_PONTO_CORRECAO_MM = 80.0
 
 # Altura da superficie onde os objetos estao apoiados, no frame de MUNDO
 # (o mesmo frame que robot_control.mover_para() recebe). A mesa e z = 0 se o
@@ -35,7 +44,7 @@ HANDEYE_PATH = os.path.join(CALIB_DIR, "calibracao_mao_olho.npz")
 # usa intersecao raio-plano, entao o unico dado fisico necessario e a ALTURA
 # DA MESA. Meca com regua e ajuste aqui.
 # (a calibracao mao-olho atual estima o tabuleiro em z ~ +21 mm neste frame)
-Z_MESA_MUNDO = 5.0
+Z_MESA_MUNDO = 0.0
 
 # Altura de cada objeto, em mm, por classe da CNN. Serve para corrigir o
 # paralaxe: o centro da bbox e o centroide visual do objeto (a ~meia altura),
@@ -77,6 +86,10 @@ class ApplicationController:
         self.ultimas_deteccoes = []
 
         self.vision_to_robot = None
+
+        # etapa 4: erro residual medido com pontos conhecidos
+        self.correcao = CorrecaoResidual(CORRECAO_PATH)
+        print("Correcao residual:", self.correcao.resumo())
 
         # thread unica de captura: nenhum outro ponto do projeto abre o
         # dispositivo enquanto ela estiver rodando. Recebe o frame BRUTO
@@ -243,17 +256,24 @@ class ApplicationController:
                         altura_objeto_mm=altura,
                     )
 
+                    # o bruto (sem correcao) e o que entra nos pontos de
+                    # correcao; senao cada ajuste seria feito em cima do
+                    # anterior
+                    d["vetor_mm_bruto"] = vetor_mm.tolist()
+                    vetor_mm = self.correcao.aplicar(vetor_mm)
                     d["vetor_mm"] = vetor_mm.tolist()
 
                     # A camera enxerga mais mesa do que o braco alcanca, entao
                     # nem todo objeto detectado da para pegar. Marcar aqui
                     # evita mandar um alvo impossivel para a rotina de pega.
                     d["alcancavel"] = self.robot.alvo_alcancavel(*vetor_mm)
-                    # A orientação parece estar espelhada, por isso o (-1) no y.
                     log += (
                         f" -> X={vetor_mm[0]:.1f} Y={vetor_mm[1]:.1f} "
                         f"Z={vetor_mm[2]:.1f} mm"
                     )
+
+                    if self.correcao.modelo != "nenhum":
+                        log += f" (corrigido, {self.correcao.modelo})"
 
                     if not d["alcancavel"]:
                         log += " [FORA DE ALCANCE]"
@@ -341,6 +361,20 @@ class ApplicationController:
             self.backend.addLog("Ja existe um movimento em andamento")
             return
 
+        # mover_para() ignora o pedido em silencio no modo juntas; sem este
+        # aviso o log diria "Movimento concluido" sem o robo se mexer
+        if self.robot.modo_juntas:
+            self.backend.addLog(
+                "Modo juntas ativo: use HOME antes de um movimento em X, Y, Z"
+            )
+            return
+
+        if not self.robot.alvo_alcancavel(x, y, z):
+            self.backend.addLog(
+                f"Ponto ({x:.1f}, {y:.1f}, {z:.1f}) fora do alcance do braco"
+            )
+            return
+
         self.backend.updateStatus(
             f"Movendo para X={x:.2f} Y={y:.2f} Z={z:.2f}"
         )
@@ -349,6 +383,96 @@ class ApplicationController:
         )
 
         self._executar_no_robo(self.robot.mover_para, x, y, z)
+
+    def manualJoints(self, j1, j2, j3, j4, j5, j6):
+
+        angulos = (j1, j2, j3, j4, j5, j6)
+        print(f"Movimento manual por juntas solicitado: {angulos}")
+
+        if self.robot_thread and self.robot_thread.isRunning():
+            self.backend.addLog("Ja existe um movimento em andamento")
+            return
+
+        texto = ", ".join(f"{a:.1f}" for a in angulos)
+        self.backend.updateStatus(f"Movendo juntas para ({texto})")
+        self.backend.addLog(f"Movimento manual por juntas: ({texto})")
+
+        self._executar_no_robo(self.robot.enviar_juntas, *angulos)
+
+    def registrar_ponto_correcao(self):
+        """Pareia a posicao atual da PONTA com a deteccao mais proxima.
+
+        Fluxo: Reconhecer -> HOME -> mover a ponta (X, Y, Z) ate o centro
+        do objeto -> Registrar. Os objetos nao podem sair do lugar entre o
+        Reconhecer e o registro.
+        """
+
+        if self.robot_thread and self.robot_thread.isRunning():
+            return "Espere o movimento terminar"
+
+        # no modo juntas posicao_mundo() devolve a ultima pose CARTESIANA,
+        # que nao e onde a ponta esta
+        if self.robot.modo_juntas:
+            return "Modo juntas ativo: HOME e mova a ponta em X, Y, Z"
+
+        candidatos = [d for d in self.ultimas_deteccoes if "vetor_mm_bruto" in d]
+
+        if not candidatos:
+            return "Nenhuma deteccao com posicao: rode Reconhecer antes"
+
+        real = np.array(self.robot.posicao_mundo())
+
+        # a ponta foi levada ate onde o objeto REALMENTE esta, entao compara
+        # com a posicao ja corrigida (a melhor estimativa atual)
+        d = min(
+            candidatos,
+            key=lambda d: np.linalg.norm(np.subtract(d["vetor_mm"][:2], real[:2])),
+        )
+        distancia = float(np.linalg.norm(np.subtract(d["vetor_mm"][:2], real[:2])))
+
+        if distancia > MAX_DIST_PONTO_CORRECAO_MM:
+            return (
+                f"Ponta a {distancia:.0f} mm da deteccao mais proxima "
+                f"({d['class']}): leve a ponta ate o centro do objeto"
+            )
+
+        bruto = d["vetor_mm_bruto"]
+        self.correcao.registrar(bruto[:2], real[:2], d["class"])
+
+        self.backend.addLog(
+            f"Ponto de correcao ({d['class']}): previsto "
+            f"({bruto[0]:.1f}, {bruto[1]:.1f}) -> real "
+            f"({real[0]:.1f}, {real[1]:.1f})"
+        )
+        self.backend.addLog(self.correcao.resumo())
+
+        return self.correcao.resumo()
+
+    def limpar_pontos_correcao(self):
+
+        self.correcao.limpar()
+        self.backend.addLog("Pontos de correcao apagados")
+
+        return self.correcao.resumo()
+
+    def resumo_correcao(self):
+
+        return self.correcao.resumo()
+
+    def set_camera_focus(self, valor):
+
+        self.camera_thread.set_focus(valor)
+
+        # o ajuste vale so ate reiniciar o app: o valor definitivo precisa
+        # ir para CameraManager.FOCO_FIXO, e as calibracoes refeitas com ele
+        self.backend.addLog(
+            f"Foco da camera: {int(valor)} (para manter, grave em "
+            "CameraManager.FOCO_FIXO e recalibre)"
+        )
+
+    def camera_focus(self):
+
+        return self.camera.foco
 
     def calibrate(self):
         
@@ -397,6 +521,15 @@ class ApplicationController:
             self.backend.addLog("Calibração pixel -> mm recarregada")
         except FileNotFoundError as e:
             self.backend.addLog(f"Falha ao recarregar calibração: {e}")
+
+        # os pontos de correcao compensavam os erros da calibracao ANTIGA;
+        # aplicados sobre a nova, eles mais atrapalham do que ajudam
+        if self.correcao.pontos:
+            self.correcao.limpar()
+            self.backend.addLog(
+                "Pontos de correcao apagados (valiam para a calibracao "
+                "anterior): colete de novo"
+            )
 
         self.backend.addLog("Etapa de processamento concluída")
 

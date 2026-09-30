@@ -8,6 +8,7 @@ from ik_craig import de as de_ferramenta
 from config import GCODE_LOG
 from ventosa_control import VentosaController
 import backend.calibration.semi_circ as sc
+from backend.camera.camera_manager import CameraManager
 import json
 import cv2
 
@@ -124,11 +125,12 @@ class RobotController:
         """Retorna o robô à posição inicial (Home) com trajetória Bézier e atualiza o estado."""
         if self.modo_juntas:
             print("Modo juntas ativo — desfazendo último movimento via log (Home).")
-            self.recuperar_do_log()
-            self.P0 = np.array([403.3643, 0, 570.3432])
-            self.Ri = np.array([[0, 0, 1], 
-                                [0, -1, 0], 
-                                [1, 0, 0]])
+            # self.recuperar_do_log()
+            # self.P0 = np.array([403.3643, 0, 570.3432])
+            # self.Ri = np.array([[0, 0, 1], 
+            #                     [0, -1, 0], 
+            #                     [1, 0, 0]])
+            self.enviar_juntas(0, 0, 0, 0, 0, 0)
             self.modo_juntas = False
             return None, None, None
 
@@ -251,6 +253,10 @@ class RobotController:
 
         # Estado 4: voltar para Home (Bezier)
         self.home()
+        time.sleep(15)
+        self.serial.send("M97 B60 T0.2") # Abre a garra novamente.
+        # time.sleep(2)
+        # self.serial.send("M97 B0 T0.2") # Fecha a garra
 
 
     def recuperar_do_log(self):
@@ -480,17 +486,12 @@ class RobotController:
 
                 # Captura pontual: abre a câmera, descarta warmup e fecha logo em seguida
                 print(f"Realizando a captura de imagem da calibração (posição {i})...")
-                if camera is not None:
-                    frame = camera.capture_frame(warmup_frames=5)
-                else:
-                    cap = cv2.VideoCapture(0)
-                    frame = None
-                    if cap.isOpened():
-                        for _ in range(5):
-                            ret, f = cap.read()
-                            if ret:
-                                frame = f
-                        cap.release()
+                # Sem camera injetada, usa o CameraManager mesmo assim: ele
+                # trava o foco e a resolucao. Um VideoCapture cru voltaria ao
+                # autofoco e as fotos nao casariam com a calibracao.
+                if camera is None:
+                    camera = CameraManager()
+                frame = camera.capture_frame(warmup_frames=5)
 
                 if frame is not None:
                     pasta_capturas = os.path.join(os.path.dirname(os.path.abspath(__file__)), "capturas")

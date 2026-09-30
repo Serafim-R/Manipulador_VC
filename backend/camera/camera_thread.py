@@ -45,6 +45,10 @@ class CamThread(QThread):
         self._last_frame = None
         self._seq = 0
 
+        # foco pedido pela GUI, aplicado pelo proprio loop de captura: o
+        # ioctl do V4L2 fica na mesma thread que faz o read()
+        self._foco_pendente = None
+
     # ------------------------------------------------------------------
     # Loop de captura
     # ------------------------------------------------------------------
@@ -72,6 +76,13 @@ class CamThread(QThread):
 
         try:
             while self._running:
+
+                self._mutex.lock()
+                foco, self._foco_pendente = self._foco_pendente, None
+                self._mutex.unlock()
+
+                if foco is not None:
+                    self.camera.set_focus(foco)
 
                 frame = self.camera.read()
 
@@ -153,6 +164,17 @@ class CamThread(QThread):
             return self._last_frame.copy(), self._seq
         finally:
             self._mutex.unlock()
+
+    def set_focus(self, valor):
+        """Pede uma mudanca de foco. Seguro de chamar da thread da GUI."""
+
+        if not self.isRunning():
+            self.camera.set_focus(valor)
+            return
+
+        self._mutex.lock()
+        self._foco_pendente = int(valor)
+        self._mutex.unlock()
 
     def capture_frame(self, warmup_frames=5, timeout_ms=4000):
         """

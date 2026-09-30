@@ -44,6 +44,7 @@ def calibrate_1():
     # Armazenamento dos pontos para calibração
     todos_cantos_charuco = []
     todos_ids_charuco = []
+    nomes_validos = []
 
     imagens = glob.glob(CAMINHO_IMAGENS)
     if not imagens:
@@ -63,6 +64,7 @@ def calibrate_1():
         if charuco_corners is not None and charuco_ids is not None and len(charuco_corners) >= 4:
             todos_cantos_charuco.append(charuco_corners)
             todos_ids_charuco.append(charuco_ids)
+            nomes_validos.append(os.path.basename(caminho))
             imagens_validas += 1
             print(f"[OK] {len(charuco_corners)} cantos ChArUco detectados em: {caminho}")
         else:
@@ -77,8 +79,9 @@ def calibrate_1():
     # ---------- PREPARAÇÃO DOS PONTOS PARA CALIBRAÇÃO ----------
     obj_points = []  # Pontos 3D reais no referencial do tabuleiro
     img_points = []  # Pontos 2D correspondentes detectados na imagem
+    nomes_usados = []
 
-    for corners, ids in zip(todos_cantos_charuco, todos_ids_charuco):
+    for corners, ids, nome in zip(todos_cantos_charuco, todos_ids_charuco, nomes_validos):
         # O método matchImagePoints cruza os IDs detectados com as coordenadas 3D do tabuleiro
         obj_p, img_p = board.matchImagePoints(corners, ids)
         
@@ -86,26 +89,48 @@ def calibrate_1():
         if obj_p is not None and img_p is not None and len(obj_p) >= 4:
             obj_points.append(obj_p)
             img_points.append(img_p)
+            nomes_usados.append(nome)
 
     # ---------- CALIBRAÇÃO ----------
     print("\nIniciando cálculo de calibração...")
+    # CALIB_FIX_K3: numa webcam comum o termo radial de 6a ordem so e
+    # "visto" nos cantos extremos da imagem. Sem pontos la, o otimizador
+    # usa o k3 para compensar ruido e chega a valores absurdos (ja saiu
+    # k3 = -1.26), que distorcem justamente as bordas da conversao pixel->mm.
     ret, K, dist, rvecs, tvecs = cv2.calibrateCamera(
-        obj_points, 
-        img_points, 
-        tamanho_img, 
-        None, 
-        None
+        obj_points,
+        img_points,
+        tamanho_img,
+        None,
+        None,
+        flags=cv2.CALIB_FIX_K3,
     )
 
+    # Erro por imagem: uma foto ruim (borrada, deteccao torta) aparece
+    # aqui bem acima das outras e vale ser apagada antes de recalibrar.
+    erros_por_imagem = []
+    for obj_p, img_p, rvec, tvec in zip(obj_points, img_points, rvecs, tvecs):
+        projetado, _ = cv2.projectPoints(obj_p, rvec, tvec, K, dist)
+        erros_por_imagem.append(float(np.sqrt(np.mean(np.sum(
+            (projetado.reshape(-1, 2) - img_p.reshape(-1, 2)) ** 2, axis=1
+        )))))
+
     print("\n=== RESULTADO ===")
-    print("Erro de reprojeção médio (RMS):", ret)
+    print(f"Erro de reprojeção médio (RMS): {ret:.3f} px")
+    if ret > 0.5:
+        print("AVISO: RMS acima de 0.5 px. Confira as imagens com maior erro "
+              "abaixo e se o foco estava travado durante as fotos.")
     print("Matriz da câmera (K):\n", K)
-    print("Coeficientes de distorção:\n", dist)
+    print("Coeficientes de distorção (k1, k2, p1, p2, k3):\n", dist)
+
+    print("\nErro de reprojeção por imagem (maiores primeiro):")
+    for erro, nome in sorted(zip(erros_por_imagem, nomes_usados), reverse=True):
+        print(f"  {erro:6.3f} px   {nome}")
 
     # ---------- SALVAR PARA AS PRÓXIMAS ETAPAS ----------
     caminho_saida = os.path.join(PASTA_DADOS, "calibracao_intrinseca.npz")
     os.makedirs(PASTA_DADOS, exist_ok=True)
-    np.savez(caminho_saida, K=K, dist=dist, tamanho_img=tamanho_img)
+    np.savez(caminho_saida, K=K, dist=dist, tamanho_img=tamanho_img, rms=ret)
     print(f"\nSalvo em {caminho_saida}")
 
     return K, dist

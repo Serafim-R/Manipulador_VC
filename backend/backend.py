@@ -120,6 +120,54 @@ class Backend(QObject):
         self.controller.manualMove(x, y, z)
 
 
+    @Slot(float, float, float, float, float, float)
+    def manualJoints(self, j1, j2, j3, j4, j5, j6):
+
+        self.controller.manualJoints(j1, j2, j3, j4, j5, j6)
+
+
+    @Slot(int)
+    def setCameraFocus(self, valor):
+
+        self.controller.set_camera_focus(valor)
+
+
+    @Slot(result=int)
+    def cameraFocus(self):
+
+        return self.controller.camera_focus()
+
+
+    @Slot(result=str)
+    def registrarPontoCorrecao(self):
+
+        return self.controller.registrar_ponto_correcao()
+
+
+    @Slot(result=str)
+    def limparPontosCorrecao(self):
+
+        return self.controller.limpar_pontos_correcao()
+
+
+    @Slot(result=str)
+    def resumoCorrecao(self):
+
+        return self.controller.resumo_correcao()
+
+
+    @Slot(result="QVariantList")
+    def currentJoints(self):
+
+        return [float(a) for a in self.controller.robot.ultimos_angulos]
+
+
+    @Slot(result="QVariantList")
+    def currentPosition(self):
+
+        return [float(c) for c in self.controller.robot.posicao_mundo()]
+
+
     def updateStatus(self, texto):
          self.statusChanged.emit(texto)
 

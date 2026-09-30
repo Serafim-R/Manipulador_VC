@@ -21,9 +21,26 @@ class CameraManager:
     FRAME_HEIGHT = 480
     FPS = 30
 
+    # Foco FIXO. A Logitech sai de fabrica com autofoco continuo, e cada
+    # refoco muda a distancia focal da lente - ou seja, invalida o K da
+    # calibracao intrinseca e, por tabela, a mao-olho e a conversao
+    # pixel -> mm. O foco precisa ser o MESMO nas fotos de calibracao e
+    # na deteccao; se mudar este valor, refaca as duas calibracoes.
+    #
+    # Escala do driver: 0-250, passo 5; valores maiores focam mais perto.
+    # Para achar o valor: robo na POSICAO_BUSCA e teste com
+    #   v4l2-ctl -d /dev/video0 -c focus_automatic_continuous=0 -c focus_absolute=30
+    # ate a mesa ficar nitida.
+    FOCO_FIXO = 5
+
     def __init__(self):
 
         self.cap = None
+
+        # foco em uso. Comeca em FOCO_FIXO e so muda pelo ajuste manual
+        # (popup de movimento manual), que serve para achar o valor certo.
+        # Reiniciar o app volta para FOCO_FIXO.
+        self.foco = self.FOCO_FIXO
 
     def open(self):
 
@@ -48,15 +65,43 @@ class CameraManager:
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.FRAME_HEIGHT)
         self.cap.set(cv2.CAP_PROP_FPS, self.FPS)
 
+        self._aplicar_foco()
+
         print(
-            "Camera aberta: {:.0f}x{:.0f} @ {:.0f} fps".format(
+            "Camera aberta: {:.0f}x{:.0f} @ {:.0f} fps, "
+            "autofoco={:.0f}, foco={:.0f}".format(
                 self.cap.get(cv2.CAP_PROP_FRAME_WIDTH),
                 self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT),
                 self.cap.get(cv2.CAP_PROP_FPS),
+                self.cap.get(cv2.CAP_PROP_AUTOFOCUS),
+                self.cap.get(cv2.CAP_PROP_FOCUS),
             )
         )
 
         return True
+
+    def _aplicar_foco(self):
+
+        # o autofoco tem de ser desligado ANTES: com ele ligado o driver
+        # marca focus_absolute como inativo e ignora o valor
+        self.cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)
+        self.cap.set(cv2.CAP_PROP_FOCUS, self.foco)
+
+    def set_focus(self, valor):
+        """Muda o foco. Com a camera aberta aplica na hora; fechada, vale
+        para o proximo open(). Devolve o foco que o driver reporta.
+
+        Chame da mesma thread que faz o read() (a CamThread cuida disso).
+        """
+
+        self.foco = int(valor)
+
+        if self.cap is None:
+            return self.foco
+
+        self._aplicar_foco()
+
+        return int(self.cap.get(cv2.CAP_PROP_FOCUS))
 
     def read(self):
         """Devolve o frame BGR mais recente, ou None. Nunca reabre o device."""
