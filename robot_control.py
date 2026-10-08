@@ -12,6 +12,20 @@ from backend.camera.camera_manager import CameraManager
 import json
 import cv2
 
+def calc_semi_esfera(c, r=500, elev_range=(65, 85), azim_range=(0, 110), n_elev=5, n_azim=6):
+    """Gera pontos em trajetória serpenteada sobre a semi-esfera sem tocar a mesa."""
+    elevs = np.linspace(elev_range[0], elev_range[1], n_elev)
+    pontos = []
+    for idx, el_deg in enumerate(elevs):
+        azims = np.linspace(azim_range[0], azim_range[1], n_azim)
+        if idx % 2 == 1:
+            azims = azims[::-1]
+        el = np.deg2rad(el_deg)
+        for az_deg in azims:
+            az = np.deg2rad(az_deg)
+            pontos.append(c + r * np.array([np.cos(el) * np.cos(az), np.cos(el) * np.sin(az), np.sin(el)]))
+    return np.array(pontos)
+
 class RobotController:
     def __init__(self, serial_driver, unity_client, ventosa=None):
         """Guarda as referências de comunicação e o estado inicial de posição e orientação do robô."""
@@ -48,12 +62,28 @@ class RobotController:
             return (float(p[0]), float(p[1]), float(p[2]))
         return (0.0, 0.0, 0.0)
 
+    def ponto_alcancavel(self, ponto, R=None):
+        """Retorna True se todos os 6 ângulos da cinemática inversa forem calculáveis."""
+        Po= ponto.copy()-self.base_offset
+        if R is None:
+            R = self.R_baixo
+        try:
+            with np.errstate(invalid="ignore"):
+                # ponytail: valida apenas solução matemática (sem NaN); upgrade: checar qlim se colidir
+                Pw = np.asarray(Po, dtype=float) - ik.de * R[:, -1]
+                t1, t2, t3 = ik.calculo_angulos(*Pw)
+                t4, t5, t6 = ik.calculo_angulos_abc(R, Po)
+            return not np.any(np.isnan([t1, t2, t3, t4, t5, t6]))
+        except Exception:
+            return False
+
     def interpolar_abc(self, R_ini, P_ini, R_fim, P_fim, n=21, A=None, B=None, C=None):
         """Interpola linearmente os ângulos do pulso (A, B, C) entre a pose inicial e a final."""
         if A == None and B == None and C == None:
             A0, B0, C0 = ik.calculo_angulos_abc(R_ini, P_ini)
         else:
             A0, B0, C0 = A, B, C
+
         Af, Bf, Cf = ik.calculo_angulos_abc(R_fim, P_fim)
         return (np.round(np.linspace(A0, Af, n), 2),
                 np.round(np.linspace(B0, Bf, n), 2),
@@ -139,6 +169,12 @@ class RobotController:
         print(f"[TRAJETÓRIA] Tempo estimado: {tempo_s:.1f} s")
         return tempo_s
 
+    def _mover_e_aguardar(self, x, y, z, A, B, C, feedrate=800):
+        """Executa o movimento e aguarda o tempo estimado de percurso."""
+        self.executar_movimento(x, y, z, A, B, C, feedrate=feedrate)
+        pausa = self.calcular_tempo_trajetoria(x, y, z, A, B, C, feedrate=feedrate)
+        time.sleep(pausa + 1)
+
     def home(self):
         """Retorna o robô à posição inicial (Home) com trajetória Bézier e atualiza o estado."""
         if self.modo_juntas:
@@ -171,20 +207,6 @@ class RobotController:
                                         [-1, 0, 0],
                                         [0, 0, -1]])
 
-    def alvo_alcancavel(self, x, y, z):                                      
-        """Recebe (x, y, z) da PONTA no frame de MUNDO e verifica se o braco 
-  alcanca                                                                    
-        com a ferramenta apontada para baixo."""                             
-        # 1. Converte do frame de MUNDO para o frame da BASE                 
-        P_base = np.array([float(x), float(y), float(z)]) - self.base_offset 
-                                                                             
-        # 2. Desloca da PONTA da ferramenta para o centro do PUNHO (J5)      
-        # Como a ferramenta aponta para baixo, o punho fica 'de' mm acima no eixo Z                                                                     
-        punho = P_base - de_ferramenta * self.R_FERRAMENTA_PARA_BAIXO[:, -1] 
-                                                                             
-        # 3. Testa a cinematica analitica direta                             
-        return ik.ponto_alcancavel(*punho)
-
     def mover_para(self, x, y, z, feedrate=800):
         """Move o efetuador ate o ponto (x, y, z), mantendo a orientacao
         atual (Ri), via trajetoria Bezier. Usado para movimentacao manual
@@ -193,7 +215,7 @@ class RobotController:
         if self.modo_juntas:
             print("Modo juntas ativo — use o Home antes de um movimento cartesiano.")
             return None, None, None
-        if not self.alvo_alcancavel(x, y, z):
+        if not self.ponto_alcancavel([x, y, z]):
             # Sem isto a cinematica inversa devolveria NaN em silencio e o
             # G-code sairia como "G1 Ynan Znan".
             print(f"Ponto ({x:.1f}, {y:.1f}, {z:.1f}) fora do alcance do braco.")
@@ -224,7 +246,7 @@ class RobotController:
             # a deteccao usa enviar_juntas(), que liga o modo juntas e bloqueia movimentos cartesianos; volta ao Home antes
             self.modo_juntas = False
         
-        if not self.alvo_alcancavel(p3[0], p3[1], p3[2]):
+        if not self.ponto_alcancavel(p3):
             print("Objeto não alcançavel")
             return
         else:
@@ -409,7 +431,9 @@ class RobotController:
                 print(f"Aviso: {caminho} ilegível ({erro}); recriando do zero.")
                 poses = {}
 
-        T_flange_base = ik.cinematica_direta(j1, j2, j3, A, B, C)
+        T_flange_base = ik.cinematica_direta_T(j1, j2, j3, A, B, C)
+        # print(f'\nT_flange_base = {T_flange_base}\n')
+        
 
         poses[nome_imagem] = {
             "juntas": [float(j1), float(j2), float(j3), float(A), float(B), float(C)],
@@ -420,89 +444,168 @@ class RobotController:
         with open(caminho, "w", encoding="utf-8") as f:
             json.dump(poses, f, indent=2)
 
-    def rotina_captura_calibracao(self, rota=1, camera=None):
+    def rotina_captura_calibracao(self, camera=None, rota=1):
 
-            u1 = np.array([1, 0, 0]) ## Normal à mesa e paralelo à parede usar até 11
-            l1 = 11
-            u2 = np.array([2, 1, 0]) ## Normal à mesa e com inclinaçao com a parede eu tenho que usar ate 10
-            l2 = 10
-            u, l = np.array([0, 0, 0]), int() # Inicializa as variáveis u e l como o tipo np.array e inteiro, respectivamente
-            if rota == 1:
-                u = u1
-                l = l1
-            else: u, l = u2, l2
-            v = np.array([0, 0, 1])
+        b = self.base_offset
+        c = np.array([-300, 210, 0]) - b
+        pontos = calc_semi_esfera(c, r=500)
 
-            b = np.array([-137, 645, 25])
-            c = np.array([-300, 210, 0])  
-            c -= b
+        # print("gerou os pontos")
 
-            px, py, pz = sc.calc_semi_circ(c, u, v)
+        for i, P_atual in enumerate(pontos):
+            try:
+                x, y, z = ik.calculo_angulos(P_atual[0], P_atual[1], P_atual[2])
+                if not (-100 <= z <= 50):
+                    continue
+            except Exception:
+                continue
 
-            """Usar range(4,11) para paralelo à parede e range(4,10) com inclinaçao com a parede"""
-            for i in range(4,l):
-                P_atual = np.array([px[i], py[i], pz[i]])
-                P_proximo = np.array([px[i+1], py[i+1], pz[i+1]])
-                x, y, z = ik.calculo_angulos(px[i], py[i], pz[i])
-                # 1. Eixo Z: Aponta para o centro
-                Z_e = c - P_atual
-                Z_hat = Z_e / np.linalg.norm(Z_e)
-                
-                # 2. Eixo Y: Tangente com ortogonalização de Gram-Schmidt
-                v_e = P_proximo - P_atual
-                Y_e = v_e - np.dot(v, Z_hat) * Z_hat
-                Y_hat = Y_e / np.linalg.norm(Y_e)
-                
-                # 3. Eixo X: Produto vetorial (Y x Z)
-                X_hat = np.cross(Y_hat, Z_hat)
-                X_hat = X_hat / np.linalg.norm(X_hat) # Garantia extra de normalização
-                
-                # 4. Construir Matriz de Rotação (3x3)
-                R_matrix = np.column_stack((X_hat, Y_hat, Z_hat))
-                A, B, C = ik.calculo_angulos_abc_semi_circ(R_matrix, P_atual)
-                C = 0
-                self.enviar_juntas(x, y, z, A, B, C)
-                if i == 4:
-                    time.sleep(15)
+            # print("verificou alcance")
+
+            Z_e = c - P_atual
+            Z_hat = Z_e / np.linalg.norm(Z_e)
+
+            up = np.array([0, 0, 1])
+            Y_e = up - np.dot(up, Z_hat) * Z_hat
+            if np.linalg.norm(Y_e) < 1e-4:
+                up = np.array([0, 1, 0])
+                Y_e = up - np.dot(up, Z_hat) * Z_hat
+            Y_hat = Y_e / np.linalg.norm(Y_e)
+
+            X_hat = np.cross(Y_hat, Z_hat)
+            X_hat = X_hat / np.linalg.norm(X_hat)
+
+            R_matrix = np.column_stack((X_hat, Y_hat, Z_hat))
+
+            # print("calculou matriz")
+            try:
+                A, B, C = ik.calculo_angulos_abc(R_matrix, P_atual, compensar_de=False)
+            except Exception:
+                continue
+            C = 0
+
+            # print("calculou angulos")
+            self.enviar_juntas(x, y, z, A, B, C)
+            if i == 0:
+                time.sleep(15)
+            else:
+                delta_graus = np.max(np.abs(np.array([x, y, z]) - np.array([x_ant, y_ant, z_ant])))
+                tempo_espera = max(4.0, (delta_graus / 800.0) * 60 * 1.2)
+                time.sleep(tempo_espera)
+            x_ant, y_ant, z_ant = x, y, z
+
+            if camera is None:
+                camera = CameraManager()
+            frame = camera.capture_frame(warmup_frames=5)
+            
+            print("Realizando a captura de imagem da calibração...")
+            if frame is not None:
+                pasta_capturas = os.path.join(os.path.dirname(os.path.abspath(__file__)), "capturas")
+                os.makedirs(pasta_capturas, exist_ok=True)
+                P_mesa = P_atual + self.base_offset
+                nome_arquivo = f"pos(x={P_mesa[0]:.2f}__y={P_mesa[1]:.2f}__z={P_mesa[2]:.2f}).jpg"
+                caminho_arquivo = os.path.join(pasta_capturas, nome_arquivo)
+                sucesso = cv2.imwrite(caminho_arquivo, frame)
+                if sucesso:
+                    print(f"Imagem salva com sucesso como {caminho_arquivo}")
+                    # Registra a pose REAL do flange junto com a foto. O nome
+                    # do arquivo só guarda x/y/z; a calibração mão-olho também
+                    # precisa da orientação, e ela não dá para ser deduzida do
+                    # nome — ainda mais porque o C é zerado logo acima. Por
+                    # isso gravamos a cinemática direta dos ângulos que foram
+                    # de fato enviados ao GRBL.
+                    self._registrar_pose_calibracao(
+                        pasta_capturas, nome_arquivo, x, y, z, A, B, C, rota
+                    )
                 else:
-                    time.sleep(5)
+                    print(f"Erro: OpenCV falhou ao salvar {caminho_arquivo}")
+            else:
+                print("Erro: Falha ao capturar frame da câmera.")
+            time.sleep(1)
 
-                # Captura pontual: abre a câmera, descarta warmup e fecha logo em seguida
-                print(f"Realizando a captura de imagem da calibração (posição {i})...")
-                # Sem camera injetada, usa o CameraManager mesmo assim: ele
-                # trava o foco e a resolucao. Um VideoCapture cru voltaria ao
-                # autofoco e as fotos nao casariam com a calibracao.
-                if camera is None:
-                    camera = CameraManager()
-                frame = camera.capture_frame(warmup_frames=5)
+        self.enviar_juntas(0, 0, 0, 0, 0, 0)
 
-                if frame is not None:
-                    pasta_capturas = os.path.join(os.path.dirname(os.path.abspath(__file__)), "capturas")
-                    os.makedirs(pasta_capturas, exist_ok=True)
-                    nome_arquivo = f"pos(x={px[i]:.2f}__y={py[i]:.2f}__z={pz[i]:.2f}).jpg"
-                    caminho_arquivo = os.path.join(pasta_capturas, nome_arquivo)
-                    sucesso = cv2.imwrite(caminho_arquivo, frame)
-                    if sucesso:
-                        print(f"Imagem salva com sucesso como {caminho_arquivo}")
-                        # Registra a pose REAL do flange junto com a foto. O nome
-                        # do arquivo só guarda x/y/z; a calibração mão-olho também
-                        # precisa da orientação, e ela não dá para ser deduzida do
-                        # nome — ainda mais porque o C é zerado logo acima. Por
-                        # isso gravamos a cinemática direta dos ângulos que foram
-                        # de fato enviados ao GRBL.
-                        self._registrar_pose_calibracao(
-                            pasta_capturas, nome_arquivo, x, y, z, A, B, C, rota
-                        )
-                    else:
-                        print(f"Erro: OpenCV falhou ao salvar {caminho_arquivo}")
-                else:
-                    print("Erro: Falha ao capturar frame da câmera.")
-                time.sleep(1)
+        # u1 = np.array([1, 0, 0]) ## Normal à mesa e paralelo à parede usar até 11
+        # l1 = 11
+        # u2 = np.array([2, 1, 0]) ## Normal à mesa e com inclinaçao com a parede eu tenho que usar ate 10
+        # l2 = 10
+        # u, l = np.array([0, 0, 0]), int() # Inicializa as variáveis u e l como o tipo np.array e inteiro, respectivamente
+        # if rota == 1:
+        #     u = u1
+        #     l = l1
+        # else: u, l = u2, l2
+        # v = np.array([0, 0, 1])
 
-            self.enviar_juntas(0, 0, 0, 0, 0, 0)
+        # b = np.array([-137, 645, 25])
+        # c = np.array([-300, 210, 0])  
+        # c -= b
+
+        # px, py, pz = sc.calc_semi_circ(c, u, v)
+
+        # """Usar range(4,11) para paralelo à parede e range(4,10) com inclinaçao com a parede"""
+        # for i in range(4,l):
+        #     P_atual = np.array([px[i], py[i], pz[i]])
+        #     P_proximo = np.array([px[i+1], py[i+1], pz[i+1]])
+        #     x, y, z = ik.calculo_angulos(px[i], py[i], pz[i])
+        #     # 1. Eixo Z: Aponta para o centro
+        #     Z_e = c - P_atual
+        #     Z_hat = Z_e / np.linalg.norm(Z_e)
+            
+        #     # 2. Eixo Y: Tangente com ortogonalização de Gram-Schmidt
+        #     v_e = P_proximo - P_atual
+        #     Y_e = v_e - np.dot(v, Z_hat) * Z_hat
+        #     Y_hat = Y_e / np.linalg.norm(Y_e)
+            
+        #     # 3. Eixo X: Produto vetorial (Y x Z)
+        #     X_hat = np.cross(Y_hat, Z_hat)
+        #     X_hat = X_hat / np.linalg.norm(X_hat) # Garantia extra de normalização
+            
+        #     # 4. Construir Matriz de Rotação (3x3)
+        #     R_matrix = np.column_stack((X_hat, Y_hat, Z_hat))
+        #     A, B, C = ik.calculo_angulos_abc_semi_circ(R_matrix, P_atual)
+        #     C = 0
+        #     self.enviar_juntas(x, y, z, A, B, C)
+        #     if i == 4:
+        #         time.sleep(15)
+        #     else:
+        #         time.sleep(5)
+
+        #     # Captura pontual: abre a câmera, descarta warmup e fecha logo em seguida
+        #     print(f"Realizando a captura de imagem da calibração (posição {i})...")
+        #     # Sem camera injetada, usa o CameraManager mesmo assim: ele
+        #     # trava o foco e a resolucao. Um VideoCapture cru voltaria ao
+        #     # autofoco e as fotos nao casariam com a calibracao.
+        #     if camera is None:
+        #         camera = CameraManager()
+        #     frame = camera.capture_frame(warmup_frames=5)
+
+        #     if frame is not None:
+        #         pasta_capturas = os.path.join(os.path.dirname(os.path.abspath(__file__)), "capturas")
+        #         os.makedirs(pasta_capturas, exist_ok=True)
+        #         nome_arquivo = f"pos(x={px[i]:.2f}__y={py[i]:.2f}__z={pz[i]:.2f}).jpg"
+        #         caminho_arquivo = os.path.join(pasta_capturas, nome_arquivo)
+        #         sucesso = cv2.imwrite(caminho_arquivo, frame)
+        #         if sucesso:
+        #             print(f"Imagem salva com sucesso como {caminho_arquivo}")
+        #             # Registra a pose REAL do flange junto com a foto. O nome
+        #             # do arquivo só guarda x/y/z; a calibração mão-olho também
+        #             # precisa da orientação, e ela não dá para ser deduzida do
+        #             # nome — ainda mais porque o C é zerado logo acima. Por
+        #             # isso gravamos a cinemática direta dos ângulos que foram
+        #             # de fato enviados ao GRBL.
+        #             self._registrar_pose_calibracao(
+        #                 pasta_capturas, nome_arquivo, x, y, z, A, B, C, rota
+        #             )
+        #         else:
+        #             print(f"Erro: OpenCV falhou ao salvar {caminho_arquivo}")
+        #     else:
+        #         print("Erro: Falha ao capturar frame da câmera.")
+        #     time.sleep(1)
+
+        # self.enviar_juntas(0, 0, 0, 0, 0, 0)
 
     def rotina_manipular(self, p0, p3, Ri, Ac, Bc, Cc):
-        if not self.ponto_alcancavel(p3-self.base_offset):
+        if not self.alvo_alcancavel(p3-self.base_offset):
             print("Objeto não alcançavel")
             return
         else:

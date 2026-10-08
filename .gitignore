@@ -5,7 +5,6 @@
 __pycache__/
 *.md
 *.pyc
-capturas/
 gcode_log.txt
 *:Zone.Identifier
 teste.py

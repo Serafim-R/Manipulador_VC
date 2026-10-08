@@ -40,7 +40,7 @@ def limpar_matriz(M, tol=1e-10):
 
 def calculo_angulos(x, y, z):
     """Cinemática inversa de posição: retorna os ângulos das juntas 1, 2 e 3 (em graus)."""
-    theta1 = np.atan2(y, x)
+    theta1 = np.arctan2(y, x)
 
     T1 = matriz_trans_np(d1, a1_1, theta1, alpha1_1)
     T1 = limpar_matriz(T1)
@@ -52,9 +52,9 @@ def calculo_angulos(x, y, z):
     y1 = T1_inv[1,0]*x + T1_inv[1,1]*y + T1_inv[1,2]*z + T1_inv[1,3]
     z1 = T1_inv[2,0]*x + T1_inv[2,1]*y + T1_inv[2,2]*z + T1_inv[2,3]
 
-    K = (np.pow(x1, 2) + np.pow(z1, 2) + np.pow(a2_1, 2) - 2*x1*a2_1 - np.pow(a3_1, 2) - np.pow(a4_1, 2) - np.pow(d4, 2))/(2*a3_1)
+    K = (np.power(x1, 2) + np.power(z1, 2) + np.power(a2_1, 2) - 2*x1*a2_1 - np.power(a3_1, 2) - np.power(a4_1, 2) - np.power(d4, 2))/(2*a3_1)
 
-    theta3 = np.atan2(a4_1, d4) - np.atan2(K, np.sqrt(np.pow(a4_1, 2) + np.pow(d4, 2) - np.pow(K, 2)))
+    theta3 = np.arctan2(a4_1, d4) - np.arctan2(K, np.sqrt(np.power(a4_1, 2) + np.power(d4, 2) - np.power(K, 2)))
 
     M = np.cos(theta1)*x + np.sin(theta1)*y - a2_1
     N = d1 - z
@@ -62,7 +62,7 @@ def calculo_angulos(x, y, z):
     s23 = (a4_1 + a3_1*np.cos(theta3))*N + (-d4 + a3_1*np.sin(theta3))*M
     c23 = (a4_1 + a3_1*np.cos(theta3))*M - (-d4 + a3_1*np.sin(theta3))*N
 
-    theta23 = np.atan2(s23, c23)
+    theta23 = np.arctan2(s23, c23)
 
     theta2 = theta23 - theta3
 
@@ -72,9 +72,10 @@ def calculo_angulos(x, y, z):
 
     return theta1, theta2, theta3
 
-def calculo_angulos_abc(R, P):
+def calculo_angulos_abc(R, P, compensar_de=True):
     """Cinemática inversa de orientação: retorna os ângulos A, B e C (juntas 4, 5 e 6)."""
-    P = P - de*R[:,-1].T
+    if compensar_de:
+        P = P - de*R[:,-1].T
 
     P = P.reshape(3,1)
 
@@ -262,43 +263,7 @@ def cinematica_direta_old(j1, j2, j3, A, B, C):
     T = np.eye(4)
     for (d, a, alpha), theta in zip(_DH, thetas):
         T = T @ np.asarray(matriz_trans_np(d, a, theta, alpha))
-    return T
-
-
-def ponto_alcancavel(x, y, z):                                           
-        """Retorna True se o punho (x, y, z) no frame da BASE tiver solucao  
-  cinematica real."""                                                        
-        theta1 = np.arctan2(y, x)                                            
-                                                                             
-        x1 = np.cos(theta1)*x + np.sin(theta1)*y                             
-        z1 = z - d1                                                          
-                                                                             
-        K = (np.power(x1, 2) + np.power(z1, 2) + np.power(a2_1, 2)           
-             - 2*x1*a2_1 - np.power(a3_1, 2) - np.power(a4_1, 2)             
-             - np.power(d4, 2)) / (2*a3_1)  
-
-        print("antes primeiro teste")                                 
-                                                                             
-        # 1. Verifica se o ponto e geometricamente alcancavel                
-        if np.power(K, 2) > np.power(a4_1, 2) + np.power(d4, 2):             
-            return False           
-
-        print("passou primeiro teste")                                          
-                                                                             
-        # 2. (Opcional, recomendado) Checa os limites angulares fisicos dos motores                                                                    
-        t1, t2, t3 = calculo_angulos(x, y, z)                                
-        if np.isnan(t1) or np.isnan(t2) or np.isnan(t3):                     
-            return False                                                     
-        print("passou segundo teste")                                       
-        # Limites reais das juntas (exemplo dos limites das juntas 2 e 3)    
-        if not (-75 <= t2 <= 125):                                           
-            return False
-        print("passou terceiro teste")                                                     
-        if not (-100 <= t3 <= 50):                                           
-            return False                                                     
-        print("passou quarto teste")              
-
-        return True
+    return T        
 
 def cinematica_direta(theta1, theta2, theta3, theta4, theta5, theta6):
     link1 = rtb.RevoluteMDH(a=a1_1,    alpha=np.deg2rad(alpha1_1),  d=d1,    qlim=[0, 2*np.pi])
@@ -315,3 +280,12 @@ def cinematica_direta(theta1, theta2, theta3, theta4, theta5, theta6):
     te = np.array(te)
 
     return te[:3,:3], te[:3,-1]
+
+
+def cinematica_direta_T(theta1, theta2, theta3, theta4, theta5, theta6):
+    """Mesma FK de `cinematica_direta`, mas devolve T_flange_base (4x4)."""
+    R, P = cinematica_direta(theta1, theta2, theta3, theta4, theta5, theta6)
+    T = np.eye(4)
+    T[:3, :3] = R
+    T[:3, 3] = np.asarray(P).flatten()
+    return T

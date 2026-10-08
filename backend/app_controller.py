@@ -250,7 +250,7 @@ class ApplicationController:
                     # entrar em robot_control.mover_para().
                     altura = ALTURA_OBJETOS_MM.get(d["class"], ALTURA_PADRAO_MM)
 
-                    print("Chega em vetor_mm")
+                    # print("Chega em vetor_mm")
 
                     vetor_mm = self.vision_to_robot.deteccao_para_mundo(
                         d["bbox"],
@@ -259,20 +259,20 @@ class ApplicationController:
                         altura_objeto_mm=altura,
                     )
 
-                    print("passou daqui")
+                    # print("passou daqui")
 
                     # o bruto (sem correcao) e o que entra nos pontos de
                     # correcao; senao cada ajuste seria feito em cima do
                     # anterior
                     d["vetor_mm_bruto"] = vetor_mm.tolist()
                     vetor_mm = self.correcao.aplicar(vetor_mm)
-                    print("passou pela correção")
+                    # print("passou pela correção")
                     d["vetor_mm"] = vetor_mm.tolist()
 
                     # A camera enxerga mais mesa do que o braco alcanca, entao
                     # nem todo objeto detectado da para pegar. Marcar aqui
                     # evita mandar um alvo impossivel para a rotina de pega.
-                    d["alcancavel"] = self.robot.alvo_alcancavel(*vetor_mm)
+                    d["alcancavel"] = self.robot.ponto_alcancavel(vetor_mm)
                     log += (
                         f" -> X={vetor_mm[0]:.1f} Y={vetor_mm[1]:.1f} "
                         f"Z={vetor_mm[2]:.1f} mm"
@@ -345,12 +345,12 @@ class ApplicationController:
         )
 
         Rc, Pc = ik.cinematica_direta(-110, 0, -20, 0, -105, 0)
-        Po = [x, y, z]
+        Pobj = [x, y, z]
 
         self.backend.updateStatus("Executando rotina: manipular objeto")
         self.backend.addLog("Rotina manipular objeto iniciada")
 
-        self._executar_no_robo(self.robot.rotina_pegar_objeto, Pc, Po, Rc, 0, -105, 0)
+        self._executar_no_robo(self.robot.rotina_pegar_objeto, Pc, Pobj, Rc, 0, -105, 0)
 
     def manipulate_ventosa(self):
 
@@ -381,7 +381,7 @@ class ApplicationController:
             )
             return
 
-        if not self.robot.alvo_alcancavel(x, y, z):
+        if not self.robot.ponto_alcancavel([x, y, z]):
             self.backend.addLog(
                 f"Ponto ({x:.1f}, {y:.1f}, {z:.1f}) fora do alcance do braco"
             )
@@ -509,11 +509,8 @@ class ApplicationController:
         # preview. CamThread.capture_frame tem a mesma assinatura que
         # CameraManager.capture_frame, então robot_control não muda.
 
-        self.robot.rotina_captura_calibracao(1, camera=self.camera_thread)
+        self.robot.rotina_captura_calibracao(camera=self.camera_thread)
         time.sleep(15)
-        self.robot.rotina_captura_calibracao(2, camera=self.camera_thread)
-        time.sleep(15)
-        self.backend.addLog("Iniciando processamento das imagens")
 
         # Etapa 1: intrínseca (K, dist) a partir das fotos recém-capturadas.
         # Precisa rodar sempre, porque um .npz de outra resolução de câmera

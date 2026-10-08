@@ -141,7 +141,7 @@ def _poses_reconstruidas():
             C = 0   # a rotina de captura zera a junta 6 antes de enviar
 
             nome = f"pos(x={px[i]:.2f}__y={py[i]:.2f}__z={pz[i]:.2f}).jpg"
-            poses[nome] = ik.cinematica_direta(j1, j2, j3, A, B, C)
+            poses[nome] = ik.cinematica_direta_T(j1, j2, j3, A, B, C)
 
     return poses
 
